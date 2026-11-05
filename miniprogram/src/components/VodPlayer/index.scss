@@ -1,0 +1,622 @@
+.vod-player {
+  position: relative;
+  width: 100%;
+  background: #000000;
+}
+
+/* ---------- 页面内横屏全屏 ---------- */
+
+/* 覆盖整个视口；页面通过 PageMeta 把方向切到 landscape。
+   自定义控制栏、倍速面板、自动连播按钮全部保留。 */
+.vod-player--fullscreen {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 9999;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+}
+
+.vod-player--fullscreen .vod-player__stage {
+  height: 100%;
+}
+
+/* 全屏左上角：返回按钮 + 当前课时导航标题，嵌入画面内部，
+   不放进系统栏 / 标题栏；控制栏自动隐藏时也保持可见可点。
+   右侧留出微信胶囊的宽度，标题过长时省略。 */
+.vod-player__fs-top {
+  position: absolute;
+  /* 横屏刘海机型左右有安全区，避免内容压到圆角 / 传感器区域。 */
+  top: calc(14PX + env(safe-area-inset-top));
+  left: calc(16PX + env(safe-area-inset-left));
+  right: calc(104PX + env(safe-area-inset-right));
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  /* 空白区域不拦截点击，视频仍可点按显示 / 隐藏控制栏。 */
+  pointer-events: none;
+}
+
+.vod-player__fs-exit {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 38PX;
+  height: 38PX;
+  border: 1PX solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.48);
+  box-shadow: 0 2PX 10PX rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
+.vod-player__fs-exit--pressed {
+  background: rgba(0, 0, 0, 0.72);
+}
+
+/* 纯 CSS 返回箭头（“<”），避免引入额外图标资源。 */
+.vod-player__fs-back-icon {
+  width: 10PX;
+  height: 10PX;
+  margin-left: 2PX;
+  border-left: 2PX solid #ffffff;
+  border-bottom: 2PX solid #ffffff;
+  transform: rotate(45deg);
+}
+
+/* 课时导航标题：与返回按钮同高的半透明胶囊，金色圆点作为品牌点缀。 */
+.vod-player__fs-title {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 30PX;
+  margin-left: 10PX;
+  padding: 0 12PX;
+  overflow: hidden;
+  border: 1PX solid rgba(255, 255, 255, 0.16);
+  border-radius: 999PX;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.vod-player__fs-title-dot {
+  flex: none;
+  width: 5PX;
+  height: 5PX;
+  margin-right: 7PX;
+  border-radius: 50%;
+  background: #e2c084;
+  box-shadow: 0 0 5PX rgba(226, 192, 132, 0.7);
+}
+
+.vod-player__fs-title-text {
+  min-width: 0;
+  overflow: hidden;
+  color: #f3ece1;
+  font-size: 13PX;
+  font-weight: 500;
+  letter-spacing: 0.3PX;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 视频区域：与 B 站移动端一致，控制栏绝对定位悬浮在视频底部。 */
+.vod-player__stage {
+  position: relative;
+  width: 100%;
+  height: 422px;
+  overflow: hidden;
+  background: #000000;
+}
+
+.vod-player__video {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- 加载态 ---------- */
+
+.vod-player__loading {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 17, 12, 0.45);
+  pointer-events: none;
+}
+
+.vod-player__spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #e2c084;
+  border-radius: 50%;
+  animation: vod-player-spin 0.9s linear infinite;
+}
+
+.vod-player__loading-text {
+  margin-top: 16px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 22px;
+  letter-spacing: 2px;
+}
+
+@keyframes vod-player-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 播放图标 ---------- */
+
+.vod-player__center-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 18;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 108px;
+  height: 108px;
+  margin-top: -54px;
+  margin-left: -54px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.vod-player__play-triangle {
+  width: 0;
+  height: 0;
+  margin-left: 6px;
+  border-top: 14px solid transparent;
+  border-bottom: 14px solid transparent;
+  border-left: 22px solid #ffffff;
+}
+
+.vod-player__play-triangle--large {
+  margin-left: 10px;
+  border-top-width: 24px;
+  border-bottom-width: 24px;
+  border-left-width: 38px;
+}
+
+.vod-player__pause-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vod-player__pause-bar {
+  width: 6px;
+  height: 26px;
+  margin: 0 4px;
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+/* ---------- 底部悬浮控制栏 ---------- */
+
+.vod-player__control {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 88px;
+  padding: 0 18px;
+  /* 产品要求：控制栏统一半透明黑色底、白色文字。 */
+  background: rgba(0, 0, 0, 0.45);
+  transition: opacity 0.2s ease;
+}
+
+.vod-player__control--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.vod-player__control-left {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.vod-player__icon-btn {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+}
+
+.vod-player__time {
+  flex: none;
+  margin-left: 8px;
+  color: #ffffff;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.vod-player__progress {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 100px;
+  margin: 0 14px;
+}
+
+.vod-player__slider {
+  width: 100%;
+  margin: 0;
+}
+
+.vod-player__control-right {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.vod-player__text-btn {
+  display: flex;
+  align-items: center;
+  padding: 10px 10px;
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.vod-player__text-btn-label {
+  color: #ffffff;
+  font-size: 24px;
+}
+
+.vod-player__auto {
+  padding-right: 2px;
+}
+
+.vod-player__auto-label {
+  color: #ffffff;
+  font-size: 24px;
+}
+
+.vod-player__auto-dot {
+  width: 10px;
+  height: 10px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.vod-player__auto-dot--on {
+  background: #e2c084;
+  box-shadow: 0 0 6px rgba(226, 192, 132, 0.85);
+}
+
+/* 全屏图标：四个直角，避免额外依赖图标字体。 */
+.vod-player__fs-icon {
+  position: relative;
+  width: 26px;
+  height: 26px;
+}
+
+.vod-player__fs-corner {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #ffffff;
+}
+
+.vod-player__fs-corner--tl {
+  top: 0;
+  left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.vod-player__fs-corner--tr {
+  top: 0;
+  right: 0;
+  border-left: 0;
+  border-bottom: 0;
+}
+
+.vod-player__fs-corner--bl {
+  bottom: 0;
+  left: 0;
+  border-top: 0;
+  border-right: 0;
+}
+
+.vod-player__fs-corner--br {
+  right: 0;
+  bottom: 0;
+  border-top: 0;
+  border-left: 0;
+}
+
+/* ---------- 倍速面板（右侧竖向） ---------- */
+
+/* 透明遮罩只覆盖视频区域，不遮挡底部控制栏：
+   点击视频空白处关闭面板，再次点击「倍速」也能关闭。 */
+.vod-player__speed-layer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 88px;
+  left: 0;
+  z-index: 24;
+}
+
+.vod-player__speed-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 200px;
+  padding: 8px 0;
+  overflow: hidden;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.78);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 6 个选项 × 48rpx + 上下内边距 = 304rpx，
+   小于遮罩可用的 334rpx（422rpx 舞台 - 88rpx 控制栏），不会被舞台裁切。 */
+.vod-player__speed-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+}
+
+.vod-player__speed-option-text {
+  color: #ffffff;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+
+.vod-player__speed-option--active {
+  background: rgba(226, 192, 132, 0.16);
+}
+
+.vod-player__speed-option--active .vod-player__speed-option-text {
+  color: #e2c084;
+  font-weight: 600;
+}
+
+/* 横屏全屏时高度变矮：面板撑满控制栏以上的可用高度，6 项均分，
+   避免固定高度在横屏下被裁切（面板具体尺寸见文件末尾的全屏适配）。 */
+.vod-player--fullscreen .vod-player__speed-option {
+  flex: 1;
+  height: auto;
+}
+
+/* ---------- 播完自动连播倒计时 ---------- */
+
+/* 只覆盖视频画面，控制栏 z-index 更高，仍在倒计时层之上。 */
+.vod-player__countdown {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 48px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.vod-player__countdown-title {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 22px;
+  letter-spacing: 2px;
+}
+
+.vod-player__countdown-lesson {
+  display: -webkit-box;
+  margin-top: 14px;
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.vod-player__countdown-tip {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 22px;
+}
+
+.vod-player__countdown-actions {
+  display: flex;
+  margin-top: 30px;
+}
+
+.vod-player__countdown-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 180px;
+  height: 68px;
+  margin: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.vod-player__countdown-btn--primary {
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+.vod-player__countdown-btn-text {
+  color: #ffffff;
+  font-size: 24px;
+}
+
+/* ---------- 横屏全屏尺寸适配 ----------
+   横屏下 rpx 按屏幕宽度换算会整体放大（宽 844 时 1rpx ≈ 1.125px），
+   控制栏、标题与文字都会显得过大。全屏内统一改用 PX（Taro 不转 rpx），
+   保持与 375 宽竖屏接近的物理尺寸。 */
+.vod-player--fullscreen .vod-player__control {
+  height: 44PX;
+  padding: 0 16PX;
+  padding-left: calc(16PX + env(safe-area-inset-left));
+  padding-right: calc(16PX + env(safe-area-inset-right));
+}
+
+.vod-player--fullscreen .vod-player__icon-btn {
+  width: 32PX;
+  height: 32PX;
+}
+
+.vod-player--fullscreen .vod-player__time {
+  margin-left: 6PX;
+  font-size: 13PX;
+}
+
+.vod-player--fullscreen .vod-player__progress {
+  margin: 0 10PX;
+  min-width: 80PX;
+}
+
+.vod-player--fullscreen .vod-player__text-btn {
+  padding: 4PX 8PX;
+}
+
+.vod-player--fullscreen .vod-player__text-btn-label,
+.vod-player--fullscreen .vod-player__auto-label {
+  font-size: 13PX;
+}
+
+.vod-player--fullscreen .vod-player__auto-dot {
+  width: 5PX;
+  height: 5PX;
+  margin-left: 4PX;
+}
+
+.vod-player--fullscreen .vod-player__play-triangle {
+  margin-left: 3PX;
+  border-top-width: 7PX;
+  border-bottom-width: 7PX;
+  border-left-width: 11PX;
+}
+
+.vod-player--fullscreen .vod-player__play-triangle--large {
+  margin-left: 5PX;
+  border-top-width: 12PX;
+  border-bottom-width: 12PX;
+  border-left-width: 19PX;
+}
+
+.vod-player--fullscreen .vod-player__pause-bar {
+  width: 3PX;
+  height: 14PX;
+  margin: 0 2PX;
+  border-radius: 1PX;
+}
+
+/* 加载态与中央播放按钮。 */
+.vod-player--fullscreen .vod-player__spinner {
+  width: 28PX;
+  height: 28PX;
+  border-width: 3PX;
+}
+
+.vod-player--fullscreen .vod-player__loading-text {
+  margin-top: 8PX;
+  font-size: 12PX;
+  letter-spacing: 1PX;
+}
+
+.vod-player--fullscreen .vod-player__center-play {
+  width: 56PX;
+  height: 56PX;
+  margin-top: -28PX;
+  margin-left: -28PX;
+}
+
+/* 倍速面板：收窄宽度与字号。 */
+.vod-player--fullscreen .vod-player__speed-layer {
+  bottom: 44PX;
+}
+
+.vod-player--fullscreen .vod-player__speed-panel {
+  top: 8PX;
+  right: 12PX;
+  bottom: 8PX;
+  width: 96PX;
+  padding: 0;
+  border-radius: 10PX;
+}
+
+.vod-player--fullscreen .vod-player__speed-option-text {
+  font-size: 13PX;
+  letter-spacing: 0;
+}
+
+/* 自动连播倒计时。 */
+.vod-player--fullscreen .vod-player__countdown {
+  padding: 0 24PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-title {
+  font-size: 12PX;
+  letter-spacing: 1PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-lesson {
+  margin-top: 8PX;
+  font-size: 18PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-tip {
+  margin-top: 6PX;
+  font-size: 12PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-actions {
+  margin-top: 16PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-btn {
+  min-width: 96PX;
+  height: 34PX;
+  margin: 0 6PX;
+  border-width: 1PX;
+}
+
+.vod-player--fullscreen .vod-player__countdown-btn-text {
+  font-size: 13PX;
+}

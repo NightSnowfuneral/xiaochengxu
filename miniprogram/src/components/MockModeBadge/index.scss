@@ -1,0 +1,15 @@
+.mock-mode-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 46px;
+  background: #ffd95a;
+  color: #5a4300;
+}
+
+.mock-mode-badge__text {
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}

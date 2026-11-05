@@ -1,0 +1,130 @@
+# 禾下美学院｜生产编排
+# 由 deploy/deploy.sh 调用；也可以手动执行：
+#   docker compose --env-file .env -f deploy/docker-compose.prod.yml up -d
+#
+# 前提：
+# - 已通过 deploy/deploy.sh 构建 admin-web 到 admin-web/dist
+# - deploy/nginx/certs/ 下已放置 fullchain.pem 与 privkey.pem
+# - deploy/secrets/ 下已放置微信支付商户私钥（新版商户还需微信支付公钥）
+# - RELEASE_TAG 由部署脚本注入，用于版本追踪与回滚
+
+name: huahuo-spark-prod
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-huahuo_spark}
+      MYSQL_USER: ${MYSQL_USER:-spark}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_prod_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - spark_prod
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - spark_prod
+
+  fastapi:
+    image: "huahuo-spark-fastapi:${RELEASE_TAG:-latest}"
+    # 与 Ubuntu 默认用户 ubuntu(1000) 对齐，使 600 权限的支付密钥可被
+    # 非 root 应用进程读取（Compose 文件型 secret 会保留宿主机属主与权限）。
+    user: "1000:1000"
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      # 国内镜像源；可在 .env 或 shell 中覆盖，海外构建可设为空以外的官方源
+      args:
+        APT_MIRROR: ${APT_MIRROR:-mirrors.cloud.tencent.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.cloud.tencent.com/pypi/simple}
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      # 容器内使用 Compose 服务名，覆盖 .env 中面向宿主机的 DATABASE_URL
+      DATABASE_URL: "mysql+aiomysql://${MYSQL_USER:-spark}:${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-huahuo_spark}?charset=utf8mb4"
+      REDIS_URL: "redis://redis:6379/0"
+      TZ: Asia/Shanghai
+    expose:
+      - "8000"
+    secrets:
+      - source: wechatpay_apiclient_key
+        target: wechatpay_apiclient_key.pem
+      - source: wechatpay_public_key
+        target: wechatpay_public_key.pem
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - spark_prod
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      fastapi:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ../admin-web/dist:/usr/share/nginx/html/admin:ro
+    healthcheck:
+      # 容器健康检查只校验配置与静态产物；真实 API/Nginx 健康由 deploy.sh 的 HTTPS 请求验证
+      test: ["CMD-SHELL", "nginx -t >/dev/null 2>&1 && test -f /usr/share/nginx/html/admin/index.html"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - spark_prod
+
+volumes:
+  mysql_prod_data:
+  redis_prod_data:
+
+secrets:
+  wechatpay_apiclient_key:
+    file: ./secrets/wechatpay_apiclient_key.pem
+  wechatpay_public_key:
+    file: ./secrets/wechatpay_public_key.pem
+
+networks:
+  spark_prod:
+    driver: bridge

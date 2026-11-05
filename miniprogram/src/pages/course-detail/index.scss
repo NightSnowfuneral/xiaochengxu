@@ -1,0 +1,248 @@
+.course-detail-page {
+  padding-bottom: 0;
+}
+
+.course-detail__cover-wrap {
+  position: relative;
+  width: 100%;
+  height: 500px;
+  overflow: hidden;
+  background: #3a3025;
+}
+
+.course-detail__cover {
+  width: 100%;
+  height: 100%;
+}
+
+.course-detail__cover-shade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(24, 20, 15, 0.12) 0%,
+    rgba(24, 20, 15, 0.22) 45%,
+    rgba(24, 20, 15, 0.88) 100%
+  );
+}
+
+.course-detail__cover-content {
+  position: absolute;
+  right: 36px;
+  bottom: 92px;
+  left: 36px;
+}
+
+.course-detail__tags {
+  display: flex;
+  align-items: center;
+}
+
+.course-detail__tag {
+  margin-right: 12px;
+  padding: 5px 16px;
+  border: 1px solid rgba(245, 221, 174, 0.4);
+  border-radius: 999px;
+  background: rgba(40, 33, 24, 0.35);
+  color: #f3d9a9;
+  font-size: 20px;
+}
+
+.course-detail__tag--owned {
+  border-color: rgba(184, 213, 186, 0.6);
+  color: #d9efda;
+}
+
+.course-detail__title {
+  display: block;
+  margin-top: 18px;
+  color: #fff9ee;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 48px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  line-height: 1.32;
+}
+
+.course-detail__lecturer {
+  display: block;
+  margin-top: 12px;
+  color: rgba(255, 246, 230, 0.7);
+  font-size: 24px;
+}
+
+.course-detail__meta-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: -58px 32px 0;
+  padding: 28px 30px;
+  border-radius: 28px;
+  background: #fffdf8;
+  box-shadow: 0 18px 40px rgba(49, 37, 22, 0.12);
+}
+
+.course-detail__price-group {
+  flex: 1;
+}
+
+.course-detail__price-label {
+  display: block;
+  color: #998c7b;
+  font-size: 21px;
+}
+
+.course-detail__price {
+  display: block;
+  margin-top: 2px;
+  color: #a37632;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 42px;
+  font-weight: 700;
+}
+
+.course-detail__meta-divider {
+  width: 1px;
+  height: 60px;
+  margin: 0 28px;
+  background: rgba(163, 118, 50, 0.13);
+}
+
+.course-detail__meta-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 104px;
+}
+
+.course-detail__meta-value {
+  color: #3b3227;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.course-detail__meta-label {
+  margin-top: 2px;
+  color: #a09484;
+  font-size: 20px;
+}
+
+.course-detail__section {
+  margin-top: 48px;
+}
+
+.course-detail__description {
+  display: block;
+  margin-top: 20px;
+  color: #665c50;
+  font-size: 27px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+
+.course-detail__lesson-count {
+  color: #a09484;
+  font-size: 22px;
+}
+
+.course-detail__lessons {
+  margin-top: 20px;
+  overflow: hidden;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.course-detail__lesson {
+  display: flex;
+  align-items: center;
+  min-height: 96px;
+  padding: 18px 24px;
+  border-bottom: 1px solid rgba(163, 118, 50, 0.08);
+}
+
+.course-detail__lesson:last-child {
+  border-bottom: none;
+}
+
+.course-detail__lesson--locked {
+  opacity: 0.72;
+}
+
+.course-detail__lesson-index {
+  width: 54px;
+  color: #b08a4a;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 24px;
+}
+
+.course-detail__lesson-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #372f25;
+  font-size: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.course-detail__lesson-state {
+  flex-shrink: 0;
+  margin-left: 16px;
+  color: #998c7b;
+  font-size: 21px;
+}
+
+.course-detail__footer-spacer {
+  height: 190px;
+}
+
+.course-detail__footer {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  padding: 18px 32px calc(18px + env(safe-area-inset-bottom));
+  background: rgba(255, 253, 248, 0.97);
+  box-shadow: 0 -12px 30px rgba(58, 43, 25, 0.08);
+}
+
+.course-detail__footer-price {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.course-detail__footer-label {
+  color: #9c8f7e;
+  font-size: 20px;
+}
+
+.course-detail__footer-value {
+  color: #a37632;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 34px;
+  font-weight: 700;
+}
+
+.course-detail__footer-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 310px;
+  height: 84px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  color: #fffaf0;
+  font-size: 29px;
+  font-weight: 600;
+}
+
+.course-detail__footer-button--disabled {
+  opacity: 0.55;
+}

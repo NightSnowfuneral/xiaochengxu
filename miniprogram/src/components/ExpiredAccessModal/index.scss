@@ -1,0 +1,70 @@
+.expired-modal {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3000;
+}
+
+.expired-modal__backdrop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(24, 20, 15, 0.58);
+}
+
+.expired-modal__panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 620px;
+  padding: 48px 46px 40px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 30px 80px rgba(25, 20, 14, 0.28);
+  transform: translate(-50%, -50%);
+}
+
+.expired-modal__title {
+  display: block;
+  color: #29231b;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
+.expired-modal__description {
+  display: block;
+  margin-top: 20px;
+  color: #8c8175;
+  font-size: 25px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.expired-modal__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 88px;
+  border-radius: 999px;
+  font-size: 29px;
+  font-weight: 600;
+}
+
+.expired-modal__button--primary {
+  margin-top: 40px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  color: #fffaf0;
+}
+
+.expired-modal__button--secondary {
+  margin-top: 16px;
+  background: #f3f1ed;
+  color: #6f6559;
+}

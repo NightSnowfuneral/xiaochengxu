@@ -1,0 +1,89 @@
+.course-card {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 22px;
+  padding: 18px;
+  border: 1px solid rgba(163, 118, 50, 0.08);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 26px rgba(74, 54, 27, 0.06);
+}
+
+.course-card__cover-wrap {
+  position: relative;
+  flex-shrink: 0;
+  width: 210px;
+  height: 142px;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #eadfce;
+}
+
+.course-card__cover {
+  width: 100%;
+  height: 100%;
+}
+
+.course-card__badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(35, 30, 23, 0.76);
+  color: #f6d999;
+  font-size: 18px;
+}
+
+.course-card__badge--owned {
+  background: rgba(75, 119, 83, 0.88);
+  color: #ffffff;
+}
+
+.course-card__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 22px;
+}
+
+.course-card__title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #2a241c;
+  font-size: 29px;
+  font-weight: 600;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.course-card__lecturer {
+  margin-top: 7px;
+  overflow: hidden;
+  color: #968a7a;
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.course-card__footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+.course-card__price {
+  color: #a37632;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 31px;
+  font-weight: 700;
+}
+
+.course-card__enter {
+  color: #9a7437;
+  font-size: 21px;
+}

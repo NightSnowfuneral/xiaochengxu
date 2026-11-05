@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Tailwind 在本次重构中只负责容器、间距、栅格等布局能力；
+ * 所有组件样式交给 Ant Design 5，这里只保留页面级基础样式。
+ */
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f4f1ea;
+  color: #1f2937;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui,
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: #e8d4ab;
+  color: #0d1526;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 登录页深色品牌区的细腻网格纹理（纯装饰，不影响组件样式）。 */
+.login-brand-grid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+      rgba(255, 255, 255, 0.04) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle at 30% 35%, #000 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(
+    circle at 30% 35%,
+    #000 0%,
+    transparent 72%
+  );
+}

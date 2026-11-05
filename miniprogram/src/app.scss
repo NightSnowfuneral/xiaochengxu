@@ -1,0 +1,134 @@
+page {
+  min-height: 100%;
+  background: #f6f2e9;
+  color: #25211b;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue',
+    Arial, sans-serif;
+  font-size: 28px;
+  line-height: 1.55;
+}
+
+view,
+text,
+button,
+input,
+scroll-view,
+image {
+  box-sizing: border-box;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+button::after {
+  border: none;
+}
+
+.page {
+  min-height: 100vh;
+  padding-bottom: calc(48px + env(safe-area-inset-bottom));
+  background:
+    radial-gradient(circle at 100% 0%, rgba(196, 154, 84, 0.12), transparent 380px),
+    #f6f2e9;
+}
+
+.section {
+  padding-left: 32px;
+  padding-right: 32px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.section-title {
+  color: #2b251d;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.section-more {
+  color: #9a7437;
+  font-size: 25px;
+}
+
+.muted {
+  color: #8c8377;
+}
+
+.state-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  padding: 40px 32px;
+  border: 1px dashed rgba(163, 118, 50, 0.28);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.55);
+  color: #8c8377;
+  font-size: 26px;
+  text-align: center;
+}
+
+.state-block__action {
+  margin-top: 20px;
+  color: #9a7437;
+  font-weight: 600;
+}
+
+.primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 88px;
+  padding: 0 44px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  box-shadow: 0 12px 28px rgba(138, 97, 40, 0.22);
+  color: #fffaf0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.primary-action--disabled {
+  opacity: 0.55;
+}
+
+.ghost-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  padding: 0 30px;
+  border: 1px solid rgba(154, 116, 55, 0.45);
+  border-radius: 999px;
+  color: #8a6128;
+  font-size: 26px;
+}
+
+.credential-note {
+  color: #9b8d7d;
+  font-size: 23px;
+  line-height: 1.6;
+}
+
+.loading-line {
+  padding: 44px 0;
+  color: #9b8d7d;
+  font-size: 25px;
+  text-align: center;
+}

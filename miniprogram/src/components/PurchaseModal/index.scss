@@ -1,0 +1,128 @@
+.purchase-modal {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2000;
+}
+
+.purchase-modal__backdrop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(24, 20, 15, 0.52);
+}
+
+.purchase-modal__panel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 34px 40px calc(30px + env(safe-area-inset-bottom));
+  border-radius: 36px 36px 0 0;
+  background: #fdfaf4;
+}
+
+.purchase-modal__mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 74px;
+  height: 74px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #c39a58, #8c6128);
+}
+
+.purchase-modal__mark-text {
+  color: #fff8e9;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 25px;
+  font-weight: 700;
+}
+
+.purchase-modal__title {
+  display: block;
+  margin-top: 18px;
+  color: #29231b;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 36px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.purchase-modal__course {
+  display: block;
+  margin-top: 10px;
+  overflow: hidden;
+  color: #7b7063;
+  font-size: 26px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.purchase-modal__amount-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 34px;
+  padding: 22px 0;
+  border-top: 1px solid rgba(163, 118, 50, 0.12);
+  border-bottom: 1px solid rgba(163, 118, 50, 0.12);
+}
+
+.purchase-modal__label {
+  color: #71675b;
+  font-size: 25px;
+}
+
+.purchase-modal__amount {
+  color: #a37632;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 46px;
+  font-weight: 700;
+}
+
+.purchase-modal__notice {
+  display: block;
+  margin-top: 18px;
+  color: #938777;
+  font-size: 22px;
+  line-height: 1.6;
+}
+
+.purchase-modal__error {
+  display: block;
+  margin-top: 16px;
+  color: #b54a3a;
+  font-size: 23px;
+  line-height: 1.5;
+}
+
+.purchase-modal__confirm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 88px;
+  margin-top: 28px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  color: #fffaf0;
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.purchase-modal__confirm--disabled {
+  opacity: 0.6;
+}
+
+.purchase-modal__cancel {
+  margin-top: 12px;
+  color: #8c8175;
+  font-size: 25px;
+  text-align: center;
+}
