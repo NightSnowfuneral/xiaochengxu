@@ -1,5 +1,8 @@
 import type {
   PageResponse,
+  RemoteVodImportPayload,
+  RemoteVodListParams,
+  RemoteVodVideo,
   VodMedia,
   VodMediaListParams,
   VodMediaSyncResponse,
@@ -26,6 +29,25 @@ export function listVodMedia(
       status: params.status
     })
   })
+}
+
+export function listRemoteVod(
+  params: RemoteVodListParams
+): Promise<PageResponse<RemoteVodVideo>> {
+  return apiGet<PageResponse<RemoteVodVideo>>('/admin/vod/remote-list', {
+    params: compactParams({
+      page: params.page,
+      page_size: params.page_size,
+      keyword: params.keyword,
+      imported: params.imported === 'all' ? undefined : params.imported
+    })
+  })
+}
+
+export function importRemoteVod(
+  payload: RemoteVodImportPayload
+): Promise<VodMedia> {
+  return apiPost<VodMedia>('/admin/vod/import', payload)
 }
 
 export function uploadVodMedia(

@@ -24,9 +24,11 @@ import re
 import tempfile
 from dataclasses import dataclass
 
+import httpx
 from fastapi import UploadFile
 from qcloud_cos import CosConfig, CosS3Client
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from tencentcloud.common import credential
 from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
@@ -45,6 +47,11 @@ from ..core.exception import (
 )
 from ..models import Lesson, VodMedia, VodMediaStatus
 from ..schemas import (
+    RemoteImportedRef,
+    RemoteVodImportRequest,
+    RemoteVodItem,
+    RemoteVodListQuery,
+    RemoteVodListResponse,
     VodMediaListQuery,
     VodMediaListResponse,
     VodMediaResponse,
@@ -116,6 +123,13 @@ def _normalize_filename(filename: str | None) -> tuple[str, str]:
     if not stem:
         stem = "未命名视频"
     return stem[:200], "mp4"
+
+
+def _clean_remote_name(value: object) -> str:
+    """清理 VOD 返回的名称：去控制字符、空值兜底、截断到 200 字符。"""
+
+    name = re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()
+    return (name or "未命名视频")[:200]
 
 
 def _build_vod_client() -> tuple[vod_client.VodClient, int | None]:
@@ -505,6 +519,174 @@ async def list_media(
     )
 
 
+async def list_remote_media(
+    session: AsyncSession,
+    query: RemoteVodListQuery,
+) -> RemoteVodListResponse:
+    """腾讯云 VOD 视频库与本地媒资库的对比列表。
+
+    远程列表来自 SearchMedia，本地索引只查一次 vod_media，按 FileId
+    在内存中比对；搜索、入库状态筛选与分页都在内存完成，因为远程接口
+    不支持按本地入库状态过滤。只读：不会删除 VOD 中已不存在但本地仍
+    保留的记录。
+    """
+
+    remote_items = await vod_service.search_all_remote_videos()
+    local_rows = (await session.scalars(select(VodMedia))).all()
+    local_map = {row.file_id: row for row in local_rows}
+
+    keyword = (query.keyword or "").strip().lower()
+    items: list[RemoteVodItem] = []
+    for remote in remote_items:
+        file_id = str(remote.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        name = _clean_remote_name(remote.get("video_name"))
+        local = local_map.get(file_id)
+
+        if (
+            keyword
+            and keyword not in name.lower()
+            and keyword not in file_id.lower()
+        ):
+            continue
+        if query.imported == "imported" and local is None:
+            continue
+        if query.imported == "not_imported" and local is not None:
+            continue
+
+        imported_ref = None
+        if local is not None:
+            imported_ref = RemoteImportedRef(
+                media_id=local.id,
+                video_name=local.video_name,
+                status=int(local.status),
+                fail_reason=local.fail_reason,
+            )
+
+        try:
+            duration = int(remote.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        cover_url = str(remote.get("cover_url") or "").strip()
+        created_at = str(remote.get("remote_created_at") or "").strip()
+
+        items.append(
+            RemoteVodItem(
+                file_id=file_id,
+                video_name=name,
+                duration_seconds=max(0, duration),
+                cover_url=cover_url or None,
+                remote_created_at=created_at or None,
+                imported=imported_ref,
+            )
+        )
+
+    # VOD 已按创建时间倒序返回；这里再排一次，避免接口排序参数变化。
+    items.sort(key=lambda item: item.remote_created_at or "", reverse=True)
+    total = len(items)
+    start = (query.page - 1) * query.page_size
+    return RemoteVodListResponse(
+        items=items[start : start + query.page_size],
+        total=total,
+        page=query.page,
+        page_size=query.page_size,
+    )
+
+
+async def import_remote_media(
+    session: AsyncSession,
+    *,
+    operator_id: int,
+    payload: RemoteVodImportRequest,
+) -> VodMediaResponse:
+    """把一条腾讯云 VOD 视频手动写入本地媒资库。
+
+    - 以 FileId 幂等：本地已存在时直接返回原记录，不重复写入；
+    - 先用 DescribeMediaInfos 确认远程仍存在，不存在时返回 404 且不落库；
+    - 状态、时长、封面以 VOD 实时结果为准，封面允许手动修改名称；
+    - 并发导入同一 FileId 由唯一键兜底，冲突后返回已存在记录。
+    """
+
+    file_id = payload.file_id.strip()
+    existing = await get_media_by_file_id(session, file_id)
+    if existing is not None:
+        return _to_response(existing)
+
+    try:
+        media_map = await vod_service.describe_media_batch([file_id])
+    except BusinessException:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "VOD 导入前查询失败 file_id=%s: %s: %s",
+            file_id,
+            type(exc).__name__,
+            exc,
+        )
+        raise BusinessException(
+            "获取腾讯云视频信息失败，请稍后重试",
+            code="VOD_IMPORT_FAILED",
+            status_code=502,
+        ) from exc
+
+    media_info = media_map.get(file_id)
+    if media_info is None:
+        raise NotFoundError(
+            "该视频在腾讯云 VOD 中不存在或已删除",
+            code="VOD_REMOTE_NOT_FOUND",
+        )
+
+    status, reason = _evaluate_transcode_state(media_info)
+    basic = media_info.get("BasicInfo")
+    basic = basic if isinstance(basic, dict) else {}
+    video_name = payload.video_name or _clean_remote_name(basic.get("Name"))
+    cover_url = str(basic.get("CoverUrl") or "").strip()
+
+    media = VodMedia(
+        file_id=file_id,
+        video_name=video_name[:200],
+        duration_seconds=vod_service._extract_duration(media_info),
+        cover_url=cover_url if 0 < len(cover_url) <= 1024 else None,
+        uploader_id=operator_id,
+        status=int(status),
+        fail_reason=reason,
+    )
+    session.add(media)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 并发导入：唯一键冲突说明另一个请求已写入，返回已有记录。
+        await session.rollback()
+        existing = await get_media_by_file_id(session, file_id)
+        if existing is not None:
+            return _to_response(existing)
+        logger.warning("远程视频入库冲突但未找到记录 file_id=%s", file_id)
+        raise BusinessException(
+            "视频入库失败，请重试",
+            code="VOD_MEDIA_SAVE_FAILED",
+            status_code=500,
+        ) from None
+    except Exception:
+        await session.rollback()
+        logger.exception("远程视频入库失败 file_id=%s", file_id)
+        raise BusinessException(
+            "视频入库失败，请重试",
+            code="VOD_MEDIA_SAVE_FAILED",
+            status_code=500,
+        ) from None
+
+    await session.refresh(media)
+    # 没有独立操作日志表，用 INFO 日志保留入库审计信息。
+    logger.info(
+        "远程视频入库 file_id=%s operator_id=%s status=%s",
+        file_id,
+        operator_id,
+        int(status),
+    )
+    return _to_response(media)
+
+
 async def sync_media_status(
     session: AsyncSession,
     payload: VodMediaSyncRequest,
@@ -672,7 +854,9 @@ __all__ = [
     "delete_media",
     "get_media_by_file_id",
     "get_media_response",
+    "import_remote_media",
     "list_media",
+    "list_remote_media",
     "require_ready_media",
     "sync_media_status",
     "update_media",

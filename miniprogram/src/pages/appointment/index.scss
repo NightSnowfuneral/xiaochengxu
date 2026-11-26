@@ -1,0 +1,755 @@
+.appointment-page {
+  padding-bottom: calc(60px + env(safe-area-inset-bottom));
+}
+
+.appointment-page__header {
+  padding-top: 34px;
+  padding-bottom: 26px;
+}
+
+.appointment-page__eyebrow {
+  display: block;
+  color: #b08a4a;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 5px;
+}
+
+.appointment-page__heading {
+  display: block;
+  margin-top: 10px;
+  color: #2b251d;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 52px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.appointment-page__sub {
+  display: block;
+  margin-top: 6px;
+  color: #998c7b;
+  font-size: 24px;
+}
+
+.appointment-page__list {
+  margin-top: 42px;
+}
+
+.appointment-page__list-head {
+  margin-bottom: 18px;
+}
+
+.appointment-page__count {
+  color: #a09484;
+  font-size: 22px;
+}
+
+.appointment-page__end {
+  padding: 16px 0 8px;
+  color: #b0a597;
+  font-size: 21px;
+  text-align: center;
+}
+
+/* ---------- 次数卡片 ---------- */
+
+.appointment-quota {
+  position: relative;
+  overflow: hidden;
+  padding: 36px 34px 30px;
+  border-radius: 38px;
+  background:
+    linear-gradient(140deg, rgba(48, 39, 28, 0.98), rgba(30, 25, 19, 0.98)),
+    #2d261d;
+  box-shadow: 0 20px 50px rgba(45, 35, 22, 0.2);
+}
+
+.appointment-quota__glow {
+  position: absolute;
+  top: -130px;
+  right: -90px;
+  width: 330px;
+  height: 330px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(209, 164, 91, 0.34),
+    rgba(209, 164, 91, 0)
+  );
+}
+
+.appointment-quota__eyebrow {
+  position: relative;
+  color: #c7a468;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 4px;
+}
+
+.appointment-quota__head {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.appointment-quota__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.appointment-quota__label {
+  display: block;
+  color: rgba(247, 238, 220, 0.66);
+  font-size: 23px;
+}
+
+.appointment-quota__value-row {
+  display: flex;
+  align-items: baseline;
+  margin-top: 2px;
+}
+
+.appointment-quota__value {
+  color: #f8f0df;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 88px;
+  font-weight: 600;
+  line-height: 1.05;
+}
+
+.appointment-quota__unit {
+  margin-left: 10px;
+  color: #c7a468;
+  font-size: 26px;
+}
+
+.appointment-quota__sub {
+  display: block;
+  margin-top: 10px;
+  color: rgba(247, 238, 220, 0.58);
+  font-size: 22px;
+}
+
+.appointment-quota__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 190px;
+  height: 76px;
+  margin-left: 20px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #d3a85c, #a37632);
+  box-shadow: 0 12px 26px rgba(163, 118, 50, 0.35);
+  color: #2b2013;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.appointment-quota__button--disabled {
+  opacity: 0.4;
+  box-shadow: none;
+}
+
+.appointment-quota__hint {
+  position: relative;
+  display: block;
+  margin-top: 12px;
+  color: #c7a468;
+  font-size: 20px;
+}
+
+.appointment-quota__stats {
+  position: relative;
+  display: flex;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(218, 184, 126, 0.16);
+}
+
+.appointment-quota__stat {
+  margin-right: 28px;
+  color: rgba(247, 238, 220, 0.7);
+  font-size: 22px;
+}
+
+/* ---------- 登录引导 ---------- */
+
+.appointment-login {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 38px 34px;
+  border: 1px solid rgba(163, 118, 50, 0.12);
+  border-radius: 32px;
+  background: linear-gradient(145deg, #fffdf8, #f7eddd);
+}
+
+.appointment-login__title {
+  color: #332b21;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 34px;
+  font-weight: 600;
+}
+
+.appointment-login__desc {
+  margin-top: 10px;
+  color: #8c8175;
+  font-size: 23px;
+  line-height: 1.7;
+}
+
+.appointment-login__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 70px;
+  margin-top: 26px;
+  padding: 0 40px;
+  border-radius: 999px;
+  background: #2e271e;
+  color: #f5e4c4;
+  font-size: 25px;
+}
+
+/* ---------- 状态筛选 ---------- */
+
+.appointment-filter {
+  width: 100%;
+  margin-bottom: 22px;
+  white-space: nowrap;
+}
+
+.appointment-filter__track {
+  display: inline-flex;
+  padding-bottom: 4px;
+}
+
+.appointment-filter__item {
+  margin-right: 14px;
+  padding: 10px 26px;
+  border: 1px solid rgba(163, 118, 50, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #8c8377;
+  font-size: 23px;
+}
+
+.appointment-filter__item--active {
+  border-color: transparent;
+  background: #2e271e;
+  color: #f5e4c4;
+  font-weight: 600;
+}
+
+/* ---------- 预约卡片 ---------- */
+
+.appointment-card {
+  display: flex;
+  margin-bottom: 20px;
+  padding: 26px;
+  border: 1px solid rgba(163, 118, 50, 0.1);
+  border-radius: 28px;
+  background: rgba(255, 253, 248, 0.96);
+  box-shadow: 0 12px 30px rgba(58, 43, 25, 0.06);
+}
+
+.appointment-card__date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 116px;
+  min-height: 116px;
+  border-radius: 22px;
+  background: linear-gradient(150deg, #f9efdc, #f0e0c3);
+}
+
+.appointment-card__day {
+  color: #8a6128;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.appointment-card__weekday {
+  margin-top: 2px;
+  color: #a37632;
+  font-size: 20px;
+}
+
+.appointment-card__body {
+  flex: 1;
+  min-width: 0;
+  margin-left: 22px;
+}
+
+.appointment-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.appointment-card__time {
+  color: #3b3227;
+  font-size: 27px;
+  font-weight: 600;
+}
+
+.appointment-card__status {
+  flex-shrink: 0;
+  margin-left: 12px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 19px;
+}
+
+.appointment-card__status--pending {
+  background: #fbf0da;
+  color: #a05e12;
+}
+
+.appointment-card__status--completed {
+  background: #e9f2e6;
+  color: #417a4c;
+}
+
+.appointment-card__status--cancelled {
+  background: #efebe4;
+  color: #8c8377;
+}
+
+.appointment-card__status--expired {
+  background: #f8e9e4;
+  color: #a9564a;
+}
+
+.appointment-card__title {
+  display: block;
+  margin-top: 8px;
+  color: #2f2820;
+  font-size: 25px;
+}
+
+.appointment-card__remark {
+  display: block;
+  margin-top: 6px;
+  color: #8c8377;
+  font-size: 21px;
+  line-height: 1.6;
+}
+
+.appointment-card__remark--admin {
+  color: #9a7437;
+}
+
+.appointment-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(163, 118, 50, 0.16);
+}
+
+.appointment-card__cancel {
+  padding: 6px 22px;
+  border: 1px solid rgba(154, 116, 55, 0.4);
+  border-radius: 999px;
+  color: #8a6128;
+  font-size: 21px;
+}
+
+.appointment-card__cancel--busy {
+  opacity: 0.6;
+}
+
+.appointment-card__locked {
+  color: #b0a597;
+  font-size: 20px;
+}
+
+/* ---------- 空状态 ---------- */
+
+.appointment-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 52px 32px;
+  border: 1px dashed rgba(163, 118, 50, 0.28);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.appointment-empty__icon {
+  font-size: 64px;
+}
+
+.appointment-empty__title {
+  margin-top: 14px;
+  color: #3b3227;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 32px;
+  font-weight: 600;
+}
+
+.appointment-empty__desc {
+  margin-top: 6px;
+  color: #8c8377;
+  font-size: 23px;
+}
+
+.appointment-empty__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 76px;
+  margin-top: 24px;
+  padding: 0 46px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  color: #fffaf0;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.appointment-empty__button--disabled {
+  opacity: 0.5;
+}
+
+.appointment-empty__hint {
+  margin-top: 10px;
+  color: #b08a4a;
+  font-size: 20px;
+}
+
+/* ---------- 骨架屏 ---------- */
+
+.appointment-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  background: #efe9de;
+}
+
+.appointment-skeleton::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0),
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0)
+  );
+  transform: translateX(-100%);
+  animation: appointment-shimmer 1.4s infinite;
+}
+
+.appointment-skeleton--quota {
+  height: 260px;
+  margin-bottom: 24px;
+  border-radius: 38px;
+}
+
+.appointment-skeleton--line {
+  width: 50%;
+  height: 42px;
+  margin-bottom: 20px;
+}
+
+.appointment-skeleton--card {
+  height: 190px;
+  margin-bottom: 20px;
+}
+
+@keyframes appointment-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ---------- 底部预约抽屉 ---------- */
+
+.appointment-sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.appointment-sheet__backdrop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(20, 16, 11, 0.52);
+}
+
+.appointment-sheet__panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  overflow: hidden;
+  border-radius: 36px 36px 0 0;
+  background: #fffdf8;
+  box-shadow: 0 -20px 50px rgba(40, 30, 18, 0.2);
+  animation: appointment-sheet-up 0.24s ease-out;
+}
+
+@keyframes appointment-sheet-up {
+  from {
+    transform: translateY(36px);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.appointment-sheet__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 30px 34px 18px;
+}
+
+.appointment-sheet__heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.appointment-sheet__title {
+  display: block;
+  color: #2b251d;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 36px;
+  font-weight: 600;
+}
+
+.appointment-sheet__sub {
+  display: block;
+  margin-top: 4px;
+  color: #998c7b;
+  font-size: 21px;
+}
+
+.appointment-sheet__close {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  margin-left: 16px;
+  color: #8c8377;
+  font-size: 46px;
+  line-height: 56px;
+  text-align: center;
+}
+
+.appointment-sheet__scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.appointment-sheet__content {
+  padding: 0 34px 24px;
+}
+
+.appointment-sheet__label {
+  display: block;
+  margin: 20px 0 14px;
+  color: #3b3227;
+  font-size: 25px;
+  font-weight: 600;
+}
+
+.appointment-sheet__label:first-child {
+  margin-top: 0;
+}
+
+.appointment-sheet__dates {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.appointment-sheet__dates-track {
+  display: inline-flex;
+  padding-bottom: 6px;
+}
+
+.appointment-sheet__date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 112px;
+  margin-right: 14px;
+  padding: 16px 0 12px;
+  border: 1px solid rgba(163, 118, 50, 0.18);
+  border-radius: 22px;
+  background: #faf6ee;
+}
+
+.appointment-sheet__date--disabled {
+  opacity: 0.45;
+}
+
+.appointment-sheet__date--active {
+  border-color: #a37632;
+  background: #2e271e;
+}
+
+.appointment-sheet__date-week {
+  color: #998c7b;
+  font-size: 20px;
+}
+
+.appointment-sheet__date-day {
+  margin-top: 4px;
+  color: #3b3227;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.appointment-sheet__date-state {
+  margin-top: 4px;
+  color: #a37632;
+  font-size: 18px;
+}
+
+.appointment-sheet__date--active .appointment-sheet__date-week,
+.appointment-sheet__date--active .appointment-sheet__date-day,
+.appointment-sheet__date--active .appointment-sheet__date-state {
+  color: #f5e4c4;
+}
+
+.appointment-sheet__slots {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.appointment-sheet__slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: calc(50% - 8px);
+  height: 104px;
+  margin: 0 16px 16px 0;
+  border: 1px solid rgba(163, 118, 50, 0.18);
+  border-radius: 20px;
+  background: #faf6ee;
+}
+
+.appointment-sheet__slot:nth-child(2n) {
+  margin-right: 0;
+}
+
+.appointment-sheet__slot--disabled {
+  opacity: 0.4;
+}
+
+.appointment-sheet__slot--active {
+  border-color: #a37632;
+  background: #2e271e;
+}
+
+.appointment-sheet__slot-time {
+  color: #3b3227;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.appointment-sheet__slot-meta {
+  margin-top: 2px;
+  color: #998c7b;
+  font-size: 19px;
+}
+
+.appointment-sheet__slot--active .appointment-sheet__slot-time,
+.appointment-sheet__slot--active .appointment-sheet__slot-meta {
+  color: #f5e4c4;
+}
+
+.appointment-sheet__textarea {
+  width: 100%;
+  height: 160px;
+  padding: 20px;
+  border-radius: 20px;
+  background: #faf6ee;
+  color: #3b3227;
+  font-size: 24px;
+  line-height: 1.6;
+}
+
+.appointment-sheet__placeholder {
+  color: #b3a796;
+}
+
+.appointment-sheet__error {
+  display: block;
+  margin-top: 14px;
+  color: #b05a4a;
+  font-size: 22px;
+}
+
+.appointment-sheet__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 34px calc(20px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(163, 118, 50, 0.12);
+  background: #fffdf8;
+}
+
+.appointment-sheet__cost {
+  flex: 1;
+  min-width: 0;
+}
+
+.appointment-sheet__cost-label {
+  display: block;
+  color: #3b3227;
+  font-size: 22px;
+}
+
+.appointment-sheet__cost-value {
+  display: block;
+  margin-top: 2px;
+  color: #a37632;
+  font-size: 21px;
+}
+
+.appointment-sheet__confirm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 270px;
+  height: 84px;
+  margin-left: 20px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  box-shadow: 0 12px 26px rgba(138, 97, 40, 0.22);
+  color: #fffaf0;
+  font-size: 27px;
+  font-weight: 600;
+}
+
+.appointment-sheet__confirm--disabled {
+  opacity: 0.5;
+  box-shadow: none;
+}

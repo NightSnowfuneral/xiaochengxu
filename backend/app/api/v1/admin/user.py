@@ -21,7 +21,9 @@ from ....schemas import (
     AdminRevokeCourseRequest,
     AdminRevokeCourseResponse,
     AdminUserCourseItem,
+    AdminUserListItem,
     AdminUserLookupQuery,
+    AdminUserSearchQuery,
     AdminUserSummary,
     PageResponse,
 )
@@ -47,6 +49,23 @@ async def lookup_user(
     return await user_course_admin_service.lookup_user(
         session,
         query.keyword,
+    )
+
+
+@router.get(
+    "/search",
+    response_model=PageResponse[AdminUserListItem],
+    summary="按手机号 / 昵称片段或用户 ID 模糊搜索用户",
+)
+async def search_users(
+    session: DbSession,
+    query: Annotated[AdminUserSearchQuery, Depends()],
+) -> PageResponse[AdminUserListItem]:
+    return await user_course_admin_service.search_users(
+        session,
+        keyword=query.keyword,
+        page=query.page,
+        page_size=query.page_size,
     )
 
 

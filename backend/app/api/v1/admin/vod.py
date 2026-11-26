@@ -13,6 +13,9 @@ from fastapi import APIRouter, Depends, File, Path, UploadFile
 
 from ....schemas import (
     MessageResponse,
+    RemoteVodImportRequest,
+    RemoteVodListQuery,
+    RemoteVodListResponse,
     VodMediaListQuery,
     VodMediaListResponse,
     VodMediaResponse,
@@ -58,6 +61,36 @@ async def list_vod_media(
     query: Annotated[VodMediaListQuery, Depends()],
 ) -> VodMediaListResponse:
     return await vod_media_service.list_media(session, query)
+
+
+@router.get(
+    "/remote-list",
+    response_model=RemoteVodListResponse,
+    summary="对比腾讯云 VOD 视频库与本地媒资库",
+)
+async def list_remote_vod_media(
+    session: DbSession,
+    query: Annotated[RemoteVodListQuery, Depends()],
+) -> RemoteVodListResponse:
+    return await vod_media_service.list_remote_media(session, query)
+
+
+@router.post(
+    "/import",
+    response_model=VodMediaResponse,
+    summary="把腾讯云 VOD 视频手动入库（仅超级管理员）",
+    dependencies=[Depends(super_admin_dep)],
+)
+async def import_remote_vod_media(
+    session: DbSession,
+    admin: AdminDep,
+    payload: RemoteVodImportRequest,
+) -> VodMediaResponse:
+    return await vod_media_service.import_remote_media(
+        session,
+        operator_id=admin.admin_id,
+        payload=payload,
+    )
 
 
 @router.post(

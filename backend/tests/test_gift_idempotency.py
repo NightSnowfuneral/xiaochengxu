@@ -1,16 +1,20 @@
-"""后台赠课：仅绑定手机号可匹配，同一 mobile + course 幂等。"""
+"""后台赠课：已注册直发、未注册预赠，同一手机号 + 课程幂等。"""
 
 from __future__ import annotations
 
 from sqlalchemy import func, select
 
 from app.core.security import create_admin_access_token
-from app.models import GiftLog, UserCourse, UserCourseSource
+from app.models import (
+    CoursePregift,
+    GiftLog,
+    UserCourse,
+    UserCourseSource,
+)
 from tests.factories import (
     API_PREFIX,
     TEST_MOBILE,
     auth_headers,
-    create_user,
 )
 
 GIFTS_URL = f"{API_PREFIX}/admin/gifts"
@@ -87,29 +91,42 @@ async def test_same_mobile_and_course_is_granted_only_once(
     assert logs_body["items"][0]["course_id"] == catalog.course_id
 
 
-async def test_unbound_mobile_cannot_receive_gift(
+async def test_unregistered_mobile_creates_pregift(
     client,
     session_factory,
     admin_account,
     catalog,
 ) -> None:
-    await create_user(
-        session_factory,
-        openid="openid_stage9_without_mobile",
-        mobile=None,
-    )
     admin_token = create_admin_access_token(admin_account.id)
+    payload = {
+        "mobile": "13900139000",
+        "course_id": catalog.course_id,
+    }
 
     response = await client.post(
         GIFTS_URL,
         headers=auth_headers(admin_token),
-        json={
-            "mobile": "13900139000",
-            "course_id": catalog.course_id,
-        },
+        json=payload,
     )
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == "GIFT_MOBILE_NOT_BOUND"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["gifted"] is True
+    assert body["user_id"] is None
+    assert body["gift_log_id"] is None
+    assert isinstance(body["pregift_id"], int)
+    assert body["mode"] == "pre_gift"
+    assert body["status"] == "pending"
+
+    duplicate = await client.post(
+        GIFTS_URL,
+        headers=auth_headers(admin_token),
+        json=payload,
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    duplicate_body = duplicate.json()
+    assert duplicate_body["gifted"] is False
+    assert duplicate_body["pregift_id"] == body["pregift_id"]
+    assert duplicate_body["status"] == "pending"
 
     async with session_factory() as session:
         access_count = await session.scalar(
@@ -118,5 +135,9 @@ async def test_unbound_mobile_cannot_receive_gift(
         log_count = await session.scalar(
             select(func.count()).select_from(GiftLog)
         )
+        pregift = await session.scalar(select(CoursePregift))
+
     assert access_count == 0
     assert log_count == 0
+    assert pregift is not None
+    assert pregift.claimed_user_id is None

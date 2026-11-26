@@ -34,6 +34,38 @@ textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 课程图片规格提示：两行对齐的小号说明，随列宽收缩。 */
+.course-image-spec {
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid #efe7da;
+  border-radius: 6px;
+  background: #fdfbf7;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.course-image-spec__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.course-image-spec__label {
+  flex: 0 0 24px;
+  color: #a99c8b;
+  letter-spacing: 0.5px;
+}
+
+.course-image-spec__value {
+  flex: 1;
+  min-width: 0;
+  color: #6b6156;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 登录页深色品牌区的细腻网格纹理（纯装饰，不影响组件样式）。 */
 .login-brand-grid::before {
   content: '';

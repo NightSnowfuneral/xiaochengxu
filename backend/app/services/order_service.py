@@ -13,6 +13,7 @@ import logging
 import secrets
 from datetime import datetime, timezone
 
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,10 +23,20 @@ from ..core.exception import (
     InternalServerError,
     NotFoundError,
 )
-from ..models import Course, Order, OrderStatus, User
+from ..models import (
+    Course,
+    CourseStatus,
+    Order,
+    OrderSource,
+    OrderStatus,
+    User,
+    UserCourse,
+)
 from ..schemas import (
     AdminOrderQuery,
     AdminOrderResponse,
+    ClientOrderQuery,
+    ClientOrderResponse,
     OrderCreateRequest,
     OrderCreateResponse,
     OrderResponse,
@@ -44,8 +55,11 @@ logger = logging.getLogger(__name__)
 _ORDER_NO_MAX_ATTEMPTS = 3
 
 
-def _generate_order_no() -> str:
-    """生成全局唯一商户订单号：HH + UTC 微秒时间 + 随机后缀。"""
+def generate_order_no() -> str:
+    """生成全局唯一商户订单号：HH + UTC 微秒时间 + 随机后缀。
+
+    30 位固定长度，同时满足微信虚拟支付 OutTradeNo 的 8–32 位限制。
+    """
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     return f"HH{stamp}{secrets.token_hex(4)}"
@@ -57,26 +71,28 @@ def _to_naive_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-async def create_order(
+async def ensure_course_purchasable(
     session: AsyncSession,
     *,
     user_id: int,
-    payload: OrderCreateRequest,
-) -> OrderCreateResponse:
-    """创建 pending 订单并返回微信支付参数。
+    course_id: int,
+) -> Course:
+    """购买前置校验：课程可售且用户当前不可重复购买。
 
-    订单先落库再请求微信统一下单：即使统一下单超时，回调仍可通过
-    order_no 找回订单完成幂等发课。
+    v3 微信支付与虚拟支付共用同一套规则：草稿 / 已下架课程不允许新
+    下单；有效期内的授权（含永久有效）不可重复购买；已过期授权允许
+    重新购买，支付成功后由回调续期。
     """
 
-    user = await user_service.get_user_model(session, user_id)
-    course = await course_service.get_course_model(
-        session,
-        payload.course_id,
-    )
+    course = await course_service.get_course_model(session, course_id)
 
-    # 有效期内的授权（含永久有效）不可重复购买；已过期授权允许重新
-    # 购买，支付成功后由回调续期；无授权记录同样允许下单。
+    if course.status != CourseStatus.PUBLISHED:
+        raise BusinessException(
+            "课程尚未上架或已下架，暂不可购买",
+            code="COURSE_NOT_AVAILABLE",
+            status_code=409,
+        )
+
     validity = await user_course_service.check_course_validity(
         session,
         user_id=user_id,
@@ -94,6 +110,27 @@ async def create_order(
             code="COURSE_ALREADY_OWNED",
             status_code=409,
         )
+    return course
+
+
+async def create_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    payload: OrderCreateRequest,
+) -> OrderCreateResponse:
+    """创建 pending 订单并返回微信支付参数。
+
+    订单先落库再请求微信统一下单：即使统一下单超时，回调仍可通过
+    order_no 找回订单完成幂等发课。
+    """
+
+    user = await user_service.get_user_model(session, user_id)
+    course = await ensure_course_purchasable(
+        session,
+        user_id=user_id,
+        course_id=payload.course_id,
+    )
 
     openid = user.openid
     course_id = course.id
@@ -109,13 +146,14 @@ async def create_order(
 
     order_no = ""
     for attempt in range(_ORDER_NO_MAX_ATTEMPTS):
-        candidate = _generate_order_no()
+        candidate = generate_order_no()
         order = Order(
             order_no=candidate,
             user_id=user_id,
             course_id=course_id,
             amount=amount,
             status=OrderStatus.PENDING,
+            source=OrderSource.WECHAT_PAY,
             openid=openid,
         )
         session.add(order)
@@ -199,19 +237,185 @@ async def get_order_status(
     return OrderResponse.model_validate(order)
 
 
+def _client_order_response(
+    order: Order,
+    *,
+    course_title: str | None,
+    course_cover: str | None,
+) -> ClientOrderResponse:
+    return ClientOrderResponse(
+        order_no=order.order_no,
+        course_id=order.course_id,
+        course_title=course_title,
+        course_cover=course_cover,
+        amount=order.amount,
+        status=order.status,
+        source=order.source,
+        paid_at=order.paid_at,
+        created_at=order.created_at,
+    )
+
+
+async def get_client_order_detail(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    order_no: str,
+) -> ClientOrderResponse:
+    """订单详情：只允许访问自己的订单，补充课程标题与封面。"""
+
+    order = await get_order_model_by_no(
+        session,
+        order_no,
+        user_id=user_id,
+    )
+    row = (
+        await session.execute(
+            select(Course.title, Course.cover_small).where(
+                Course.id == order.course_id
+            )
+        )
+    ).one_or_none()
+    return _client_order_response(
+        order,
+        course_title=row[0] if row is not None else None,
+        course_cover=row[1] if row is not None else None,
+    )
+
+
+async def list_client_orders(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    query: ClientOrderQuery,
+) -> PageResponse[ClientOrderResponse]:
+    """C 端订单中心：只返回当前 JWT 用户自己的订单。
+
+    订单按创建时间倒序排列，展示课程标题、封面与固化金额；不返回
+    openid、支付流水或课程有效期。支持 pending / paid / closed 状态筛选。
+    """
+
+    page = max(1, int(query.page))
+    page_size = max(1, min(int(query.page_size), 100))
+    offset = (page - 1) * page_size
+
+    conditions: list[object] = [
+        Order.user_id == user_id,
+        Order.status != OrderStatus.REFUNDED,
+    ]
+    if query.status is not None:
+        conditions.append(Order.status == query.status)
+    total = await session.scalar(
+        select(func.count()).select_from(Order).where(*conditions)
+    )
+
+    rows = (
+        await session.execute(
+            select(Order, Course.title, Course.cover_small)
+            .join(Course, Course.id == Order.course_id)
+            .where(*conditions)
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+    ).all()
+
+    items = [
+        _client_order_response(
+            order,
+            course_title=course_title,
+            course_cover=course_cover,
+        )
+        for order, course_title, course_cover in rows
+    ]
+
+    return PageResponse[ClientOrderResponse](
+        items=items,
+        total=int(total or 0),
+        page=page,
+        page_size=page_size,
+    )
+
+
+async def pay_pending_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    order_no: str,
+) -> OrderCreateResponse:
+    """为当前用户的 pending 订单重新获取微信支付参数。
+
+    复用原订单号与固化金额，不创建新订单；支付结果仍以微信回调为准。
+    已拥有课程或订单已非 pending 时拒绝支付，避免重复扣款。
+    """
+
+    order = await get_order_model_by_no(
+        session,
+        order_no,
+        user_id=user_id,
+    )
+    if (
+        order.status is not OrderStatus.PENDING
+        or order.source is not OrderSource.WECHAT_PAY
+    ):
+        raise BusinessException(
+            "订单当前状态不可支付",
+            code="ORDER_NOT_PAYABLE",
+            status_code=409,
+        )
+
+    validity = await user_course_service.check_course_validity(
+        session,
+        user_id=user_id,
+        course_id=order.course_id,
+    )
+    if validity.can_play:
+        raise BusinessException(
+            "您已拥有该课程，无需重复支付",
+            code="COURSE_ALREADY_OWNED",
+            status_code=409,
+        )
+
+    user = await user_service.get_user_model(session, user_id)
+    openid = (order.openid or user.openid or "").strip()
+    course_title = await session.scalar(
+        select(Course.title).where(Course.id == order.course_id)
+    )
+
+    payment = await pay_service.create_payment_params(
+        order_no=order.order_no,
+        amount=order.amount,
+        description=f"禾下美学院课程-{course_title or '课程'}",
+        openid=openid,
+    )
+
+    return OrderCreateResponse(
+        order_no=order.order_no,
+        course_id=order.course_id,
+        amount=order.amount,
+        status=order.status,
+        payment=payment,
+    )
+
+
 async def _payment_order_response(
     session: AsyncSession,
     order: Order,
 ) -> PaymentOrderResponse:
     """构造统一支付响应：附带课程标题，绝不返回有效期。"""
 
-    course_title = await session.scalar(
-        select(Course.title).where(Course.id == order.course_id)
-    )
+    course_row = (
+        await session.execute(
+            select(Course.title, Course.appointment_quota).where(
+                Course.id == order.course_id
+            )
+        )
+    ).one_or_none()
     return PaymentOrderResponse(
         order_no=order.order_no,
         course_id=order.course_id,
-        course_title=course_title,
+        course_title=course_row[0] if course_row is not None else None,
+        appointment_quota=int(course_row[1] or 0) if course_row is not None else 0,
         amount=order.amount,
         status=order.status,
         paid_at=order.paid_at,
@@ -224,6 +428,7 @@ async def query_payment_order(
     *,
     user_id: int,
     order_no: str,
+    redis: Redis | None = None,
 ) -> PaymentOrderResponse:
     """查询订单；pending 时主动查微信并同步（回调丢失的兜底）。"""
 
@@ -231,8 +436,34 @@ async def query_payment_order(
         session,
         user_id=user_id,
         order_no=order_no,
+        redis=redis,
     )
     return await _payment_order_response(session, order)
+
+
+async def cancel_pending_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    order_no: str,
+    redis: Redis | None = None,
+) -> ClientOrderResponse:
+    """用户主动取消待支付订单，返回取消后的订单详情。
+
+    取消瞬间若微信侧已支付，服务层会放弃取消并正常发课，返回 paid。
+    """
+
+    order = await pay_service.cancel_pending_order(
+        session,
+        user_id=user_id,
+        order_no=order_no,
+        redis=redis,
+    )
+    return await get_client_order_detail(
+        session,
+        user_id=user_id,
+        order_no=order.order_no,
+    )
 
 
 async def close_payment_order(
@@ -240,13 +471,15 @@ async def close_payment_order(
     *,
     user_id: int,
     order_no: str,
+    redis: Redis | None = None,
 ) -> PaymentOrderResponse:
     """关闭超过 30 分钟仍未支付的订单。"""
 
-    order = await pay_service.close_unpaid_order(
+    order = await pay_service.close_expired_order(
         session,
         user_id=user_id,
         order_no=order_no,
+        redis=redis,
     )
     return await _payment_order_response(session, order)
 
@@ -290,9 +523,20 @@ async def list_admin_orders(
 
     rows = (
         await session.execute(
-            select(Order, User.mobile, Course.title)
+            select(
+                Order,
+                User.mobile,
+                Course.title,
+                Course.appointment_quota,
+                UserCourse.appointment_quota_count,
+            )
             .join(User, User.id == Order.user_id)
             .join(Course, Course.id == Order.course_id)
+            .outerjoin(
+                UserCourse,
+                (UserCourse.user_id == Order.user_id)
+                & (UserCourse.course_id == Order.course_id),
+            )
             .where(*conditions)
             .order_by(Order.created_at.desc(), Order.id.desc())
             .offset(offset)
@@ -312,8 +556,19 @@ async def list_admin_orders(
             user_id=order.user_id,
             user_mobile=user_mobile,
             course_title=course_title,
+            appointment_quota_count=(
+                int(snapshot)
+                if snapshot is not None
+                else int(course_quota or 0)
+            ),
         )
-        for order, user_mobile, course_title in rows
+        for (
+            order,
+            user_mobile,
+            course_title,
+            course_quota,
+            snapshot,
+        ) in rows
     ]
 
     return PageResponse[AdminOrderResponse](
@@ -325,10 +580,14 @@ async def list_admin_orders(
 
 
 __all__ = [
+    "cancel_pending_order",
     "close_payment_order",
     "create_order",
+    "get_client_order_detail",
     "get_order_model_by_no",
     "get_order_status",
     "list_admin_orders",
+    "list_client_orders",
+    "pay_pending_order",
     "query_payment_order",
 ]

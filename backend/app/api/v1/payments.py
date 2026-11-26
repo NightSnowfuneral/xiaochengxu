@@ -1,13 +1,16 @@
-"""微信支付 V3 JSAPI 接口。
+"""支付接口（微信支付 V3 + 小程序虚拟支付）。
 
 路径：
 - POST /payments/create-order          创建订单并返回 wx.requestPayment 参数
+- POST /payments/virtual/create-order  虚拟支付下单，返回签名后的支付参数
 - GET  /payments/query-order/{order_no} 查询本地订单，pending 时主动查微信
 - POST /payments/close-order/{order_no} 关闭超过 30 分钟未支付订单
 
 身份一律来自 C 端 JWT；客户端若额外携带 user_id / openid，必须与 JWT
 用户完全一致，否则 403，服务端不会信任这些字段。金额由课程价格固化，
-请求体不能指定金额。异步回调位于 `/payments/wechat/notify`，免 JWT。
+请求体不能指定金额。虚拟支付只接受 product_id，金额/商品/环境由服务端
+重新解析。异步回调位于 `/payments/wechat/notify` 与 `/api/wx/xpay/callback`，
+均免 JWT。
 """
 
 from __future__ import annotations
@@ -22,9 +25,11 @@ from ...schemas import (
     OrderCreateResponse,
     PaymentCreateOrderRequest,
     PaymentOrderResponse,
+    VirtualPayCreateRequest,
+    VirtualPayCreateResponse,
 )
-from ...services import order_service, user_service
-from ..deps import DbSession, UserDep
+from ...services import order_service, user_service, vpay_pay_service
+from ..deps import DbSession, RedisDep, UserDep
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -71,6 +76,27 @@ async def create_order(
     )
 
 
+@router.post(
+    "/virtual/create-order",
+    response_model=VirtualPayCreateResponse,
+    summary="虚拟支付下单并返回 wx.requestVirtualPayment 参数",
+)
+async def create_virtual_order(
+    payload: VirtualPayCreateRequest,
+    session: DbSession,
+    user: UserDep,
+    redis: RedisDep,
+) -> VirtualPayCreateResponse:
+    return await vpay_pay_service.create_virtual_order(
+        session,
+        user_id=user.user_id,
+        product_id=payload.product_id,
+        platform=payload.platform,
+        login_code=payload.login_code,
+        redis=redis,
+    )
+
+
 @router.get(
     "/query-order/{order_no}",
     response_model=PaymentOrderResponse,
@@ -80,11 +106,13 @@ async def query_order(
     order_no: OrderNoPath,
     session: DbSession,
     user: UserDep,
+    redis: RedisDep,
 ) -> PaymentOrderResponse:
     return await order_service.query_payment_order(
         session,
         user_id=user.user_id,
         order_no=order_no,
+        redis=redis,
     )
 
 
@@ -97,11 +125,13 @@ async def close_order(
     order_no: OrderNoPath,
     session: DbSession,
     user: UserDep,
+    redis: RedisDep,
 ) -> PaymentOrderResponse:
     return await order_service.close_payment_order(
         session,
         user_id=user.user_id,
         order_no=order_no,
+        redis=redis,
     )
 
 

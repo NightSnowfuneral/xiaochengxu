@@ -3,8 +3,9 @@ import { Button, Text, View } from '@tarojs/components'
 import Taro, { useRouter } from '@tarojs/taro'
 
 import MockModeBadge from '../../components/MockModeBadge'
+import WxAuthSheet from '../../components/WxAuthSheet'
 import { DEFAULT_PAGE_SIZE } from '../../constants'
-import { useAuthGuard } from '../../hooks/useAuthGuard'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import {
   OrderClosedError,
   OrderPollTimeoutError,
@@ -25,14 +26,15 @@ type PaymentPageState = 'polling' | 'paid' | 'timeout' | 'closed' | 'error'
 
 /**
  * 支付成功页：
- * 1. 轮询 query-order 确认最终支付结果（后端会主动向微信查单）；
+ * 1. 轮询 query-order 确认最终支付结果（只读本地订单，虚拟支付发货
+ *    以微信 xpay 推送为准）；
  * 2. 确认已支付后停止轮询，刷新课程详情与我的课程；
  * 3. 不在 C 端展示任何课程有效期信息。
  */
 export default function PaymentSuccessPage() {
   const router = useRouter()
   const dispatch = useAppDispatch()
-  const { checking, allowed } = useAuthGuard()
+  const { openLogin } = useRequireAuth()
   const token = useAppSelector((state) => state.user.token)
   const orderNo = (router.params.orderNo || '').trim()
   const courseId = parsePositiveInt(router.params.courseId)
@@ -51,7 +53,7 @@ export default function PaymentSuccessPage() {
   }, [])
 
   useEffect(() => {
-    if (!allowed || !token || !orderNo || pollingRef.current) {
+    if (!token || !orderNo || pollingRef.current) {
       return
     }
 
@@ -113,7 +115,7 @@ export default function PaymentSuccessPage() {
     return () => {
       cancelled = true
     }
-  }, [allowed, courseId, dispatch, orderNo, retryKey, token])
+  }, [courseId, dispatch, orderNo, retryKey, token])
 
   const backToCourse = () => {
     const pages = Taro.getCurrentPages()
@@ -136,24 +138,19 @@ export default function PaymentSuccessPage() {
   }
 
   const renderContent = () => {
-    if (checking) {
-      return (
-        <View className='payment-success__card'>
-          <View className='payment-success__mark'>
-            <Text className='payment-success__mark-text'>…</Text>
-          </View>
-          <Text className='payment-success__title'>正在确认登录状态</Text>
-        </View>
-      )
-    }
-
-    if (!allowed) {
+    if (!token) {
       return (
         <View className='payment-success__card'>
           <View className='payment-success__mark'>
             <Text className='payment-success__mark-text'>禾</Text>
           </View>
           <Text className='payment-success__title'>登录后查看支付结果</Text>
+          <Button
+            className='primary-action'
+            onClick={() => openLogin('登录后查看支付结果')}
+          >
+            手机号快捷登录
+          </Button>
         </View>
       )
     }
@@ -181,7 +178,7 @@ export default function PaymentSuccessPage() {
       state === 'paid'
         ? '支付成功'
         : state === 'closed'
-          ? '订单已关闭'
+          ? '订单已取消'
           : state === 'timeout'
             ? '支付结果确认中'
             : state === 'error'
@@ -253,6 +250,7 @@ export default function PaymentSuccessPage() {
         <Text className='payment-success__hero-title'>购买结果</Text>
       </View>
       <View className='section'>{renderContent()}</View>
+      <WxAuthSheet />
     </View>
   )
 }

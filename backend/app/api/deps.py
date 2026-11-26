@@ -26,12 +26,17 @@ from ..core.config import settings
 from ..core.deps import (
     AdminDep,
     AdminIdentity,
+    OptionalUserDep,
     UserDep,
     UserIdentity,
+    UserTokenDep,
     admin_dep,
+    optional_user_dep,
     user_dep,
+    user_token_dep,
 )
 from ..core.exception import AuthenticationError, PermissionDeniedError
+from ..core.redis import close_redis, get_redis, redis_client
 from ..models import AdminRole, AdminUser
 
 engine = create_async_engine(
@@ -47,13 +52,6 @@ SessionFactory = async_sessionmaker(
     autoflush=False,
 )
 
-redis_client = Redis.from_url(
-    settings.redis_url.get_secret_value(),
-    encoding="utf-8",
-    decode_responses=True,
-)
-
-
 async def get_session() -> AsyncIterator[AsyncSession]:
     """每个请求一个 AsyncSession，异常时回滚并交给全局异常处理。"""
 
@@ -65,21 +63,30 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-async def get_redis() -> Redis:
-    """返回进程内共享的 Redis 客户端；连接由客户端池自行管理。"""
+async def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """返回会话工厂而非会话。
 
-    return redis_client
+    微信虚拟支付回调需要在处理过程中自行开启多个短事务，并且必须把所有
+    异常转换为 XML，不能沿 FastAPI 依赖异常链返回 JSON；因此路由只注入
+    工厂，在 handler 的 try 内使用。
+    """
+
+    return SessionFactory
 
 
 async def close_infra() -> None:
     """关闭 Redis 与数据库连接池，供应用 lifespan 退出时调用。"""
 
-    await redis_client.aclose()
+    await close_redis()
     await engine.dispose()
 
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
+SessionFactoryDep = Annotated[
+    async_sessionmaker[AsyncSession],
+    Depends(get_session_factory),
+]
 
 
 async def super_admin_dep(
@@ -111,17 +118,23 @@ __all__ = [
     "AdminDep",
     "AdminIdentity",
     "DbSession",
+    "OptionalUserDep",
     "RedisDep",
     "SessionFactory",
+    "SessionFactoryDep",
     "SuperAdminDep",
     "UserDep",
     "UserIdentity",
+    "UserTokenDep",
     "admin_dep",
     "close_infra",
     "engine",
     "get_redis",
     "get_session",
+    "get_session_factory",
+    "optional_user_dep",
     "redis_client",
     "super_admin_dep",
     "user_dep",
+    "user_token_dep",
 ]

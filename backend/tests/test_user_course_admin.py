@@ -12,6 +12,7 @@ from app.core.security import (
     create_user_access_token,
 )
 from app.models import (
+    GiftLog,
     UserCourse,
     UserCourseAction,
     UserCourseLog,
@@ -166,6 +167,44 @@ async def test_grant_creates_single_row_and_resets_validity(
     ]
     assert logs[0].valid_days == 365
     assert logs[1].valid_days == 30
+
+    # 首次赠课写赠课日志；重置只写操作日志，不重复记一次新增赠课。
+    async with session_factory() as session:
+        gift_logs = list(
+            (
+                await session.scalars(
+                    select(GiftLog)
+                    .where(
+                        GiftLog.user_id == user_account.id,
+                        GiftLog.course_id == catalog.course_id,
+                    )
+                    .order_by(GiftLog.id.asc())
+                )
+            ).all()
+        )
+    assert len(gift_logs) == 1
+    assert gift_logs[0].mobile == TEST_MOBILE
+    assert gift_logs[0].admin_id == admin_account.id
+
+    # 操作日志接口同时覆盖赠课与重置。
+    log_response = await client.get(
+        f"{API_PREFIX}/admin/user-courses/logs",
+        headers=headers,
+        params={
+            "user_id": user_account.id,
+            "course_id": catalog.course_id,
+        },
+    )
+    assert log_response.status_code == 200, log_response.text
+    log_body = log_response.json()
+    assert log_body["total"] == 2
+    assert [item["action"] for item in log_body["items"]] == [
+        "reset",
+        "gift",
+    ]
+    assert log_body["items"][0]["user_mobile"] == TEST_MOBILE
+    assert log_body["items"][0]["course_title"] == catalog.course_title
+    assert log_body["items"][0]["admin_username"] == admin_account.username
 
 
 async def test_grant_on_purchased_course_resets_source_to_gift(
@@ -384,3 +423,136 @@ async def test_user_course_admin_requires_admin_token(
         f"{USERS_URL}/{user_account.id}/courses"
     )
     assert unauthorized.status_code == 401
+
+    search_unauthorized = await client.get(
+        f"{USERS_URL}/search",
+        params={"keyword": "138"},
+    )
+    assert search_unauthorized.status_code == 401
+
+
+async def test_search_users_fuzzy_mobile_nickname_and_id(
+    client,
+    session_factory,
+    admin_account,
+    catalog,
+) -> None:
+    first = await create_user(
+        session_factory,
+        openid="openid_search_1",
+        mobile="13811112222",
+        nickname="小王",
+    )
+    second = await create_user(
+        session_factory,
+        openid="openid_search_2",
+        mobile="13811113333",
+        nickname="小李",
+    )
+    third = await create_user(
+        session_factory,
+        openid="openid_search_3",
+        mobile="13900002222",
+        nickname="王老师",
+    )
+    async with session_factory() as session:
+        session.add(
+            UserCourse(
+                user_id=first.id,
+                course_id=catalog.course_id,
+                source=UserCourseSource.GIFT,
+                valid_start_at=datetime.utcnow(),
+                valid_end_at=datetime.utcnow() + timedelta(days=365),
+            )
+        )
+        await session.commit()
+
+    headers = _admin_headers(admin_account.id)
+
+    # 手机号片段：命中两个 1381111xxxx 用户。
+    by_fragment = await client.get(
+        f"{USERS_URL}/search",
+        headers=headers,
+        params={"keyword": "1111"},
+    )
+    assert by_fragment.status_code == 200, by_fragment.text
+    fragment_body = by_fragment.json()
+    assert fragment_body["total"] == 2
+    assert {item["mobile"] for item in fragment_body["items"]} == {
+        "13811112222",
+        "13811113333",
+    }
+    counted = next(
+        item
+        for item in fragment_body["items"]
+        if item["user_id"] == first.id
+    )
+    assert counted["owned_course_count"] == 1
+
+    # 昵称片段：命中「小王」「王老师」。
+    by_nickname = await client.get(
+        f"{USERS_URL}/search",
+        headers=headers,
+        params={"keyword": "王"},
+    )
+    assert by_nickname.status_code == 200, by_nickname.text
+    assert by_nickname.json()["total"] == 2
+    assert {item["user_id"] for item in by_nickname.json()["items"]} == {
+        first.id,
+        third.id,
+    }
+
+    # 用户 ID：与手机号片段并列参与匹配，目标用户必须出现在结果中。
+    by_id = await client.get(
+        f"{USERS_URL}/search",
+        headers=headers,
+        params={"keyword": str(second.id)},
+    )
+    assert by_id.status_code == 200, by_id.text
+    assert second.id in {
+        item["user_id"] for item in by_id.json()["items"]
+    }
+
+    # LIKE 通配符必须被转义，`%` 不能变成“匹配所有用户”。
+    wildcard = await client.get(
+        f"{USERS_URL}/search",
+        headers=headers,
+        params={"keyword": "%"},
+    )
+    assert wildcard.status_code == 200, wildcard.text
+    assert wildcard.json()["total"] == 0
+
+    missing = await client.get(
+        f"{USERS_URL}/search",
+        headers=headers,
+        params={"keyword": "1377777"},
+    )
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["items"] == []
+    assert missing.json()["total"] == 0
+
+
+async def test_search_users_pagination(
+    client,
+    session_factory,
+    admin_account,
+) -> None:
+    for index in range(3):
+        await create_user(
+            session_factory,
+            openid=f"openid_search_page_{index}",
+            mobile=f"1370000000{index}",
+            nickname=f"分页用户 {index}",
+        )
+
+    response = await client.get(
+        f"{USERS_URL}/search",
+        headers=_admin_headers(admin_account.id),
+        params={"keyword": "1370000000", "page": 2, "page_size": 2},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 3
+    assert body["page"] == 2
+    assert body["page_size"] == 2
+    assert len(body["items"]) == 1

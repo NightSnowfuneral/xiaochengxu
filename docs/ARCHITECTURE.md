@@ -23,7 +23,7 @@
 | 组成 | 技术栈 | 职责 |
 | --- | --- | --- |
 | C 端小程序 `miniprogram/` | Taro + React + TypeScript + Redux Toolkit + redux-persist | 首页、商学院课程广场、课程详情、视频播放、个人中心 |
-| B 端后台 `admin-web/` | React + TypeScript + Redux Toolkit + react-router-dom + TailwindCSS + axios | 管理员登录、课程/课时管理、赠课、用户课程管理、赠课日志、订单查询、系统配置 |
+| B 端后台 `admin-web/` | React + TypeScript + Redux Toolkit + react-router-dom + TailwindCSS + axios | 管理员登录、课程/课时管理、媒资管理、VOD 视频库对比与入库、赠课、用户课程管理、赠课日志、订单查询、系统配置 |
 | 统一 API `backend/` | FastAPI + Python 3.11 + 异步 SQLAlchemy + Alembic + MySQL 8.0 + Redis | 同时服务 C 端与 B 端，签发播放鉴权，处理支付回调与异步任务 |
 | 部署 `deploy/` | Docker + Docker Compose + Nginx | 本地开发与生产两套编排、反向代理、静态站点与密钥挂载 |
 | 云服务 | 腾讯 COS + 腾讯 VOD + 微信支付 | 图片预签名上传、VOD 鉴权播放、微信统一下单与异步回调 |
@@ -168,9 +168,13 @@ beauty-course-mp/
 
 ### 5.1 实体关系
 
-- `user` 1 : N `order`、`user_course`、`study_record`
-- `course` 1 : N `lesson`、`order`、`user_course`、`gift_log`
-- `admin_user` 1 : N `gift_log`、`vod_media`
+- `user` 1 : N `user_bind_openid`、`order`、`user_course`、`study_record`、`gift_claim_log`
+- `course` 1 : N `lesson`、`order`、`user_course`、`gift_log`、`course_pregift`、`course_status_logs`、`vpay_products`
+- `vpay_product` N : 1 `course`（微信虚拟支付商品映射，`(product_id, env)` 唯一）
+- `xpay_push_logs` 为独立审计表，不设外键，记录虚拟支付消息推送原文与处理结果
+- `admin_user` 1 : N `course_status_logs`（上下架操作人）
+- `admin_user` 1 : N `gift_log`、`course_pregift`、`vod_media`
+- `course_pregift` 0..1 : 1 `user`（认领前 `claimed_user_id` 为空，认领后永久归属）
 - `vod_media` 1 : N `lesson`（通过 `lesson.vod_file_id = vod_media.file_id`，同一视频可被多个课时复用）
 - `system_config` 为独立配置表，不依赖业务实体
 
@@ -178,16 +182,24 @@ beauty-course-mp/
 
 | 实体 | 核心字段 | 约束与说明 |
 | --- | --- | --- |
-| `user` | `id`、`openid`、`mobile`、`created_at`、`updated_at` | `openid` 唯一；`mobile` 可为 `NULL`；赠课只依赖 `mobile` 匹配 |
-| `course` | `id`、`title`、`lecturer`、`description`、`price`、`cover_big`、`cover_small`、`icon_url`、`is_hot_topic` | 三张图片地址相互独立；`is_hot_topic` 驱动首页热门板块 |
+| `user` | `id`、`phone`、`phone_masked`、`nickname`、`avatar_url`、`status`、`created_at`、`updated_at` | 手机号唯一，是账号唯一信任基准；主表不存 `openid`；同手机号的不同微信合并到同一账号 |
+| `user_bind_openid` | `id`、`user_id`、`openid`、`wx_appid`、`created_at` | `openid` 唯一；一个用户可绑定多个微信；登录按 openid 反查用户 |
+| `user_merge_log` | `id`、`user_id`、`openid`、`action`、`source_ip`、`created_at` | 账号合并 / 绑定留痕，只增不改 |
+| `course` | `id`、`title`、`lecturer`、`description`、`price`、`cover_big`、`cover_small`、`icon_url`、`is_hot_topic`、`status` | 三张图片地址相互独立；`is_hot_topic` 驱动首页热门板块；`status` 为 `published` / `draft` / `offline`，新建默认 `draft`，历史课程迁移回填 `published` |
+| `course_status_logs` | `id`、`course_id`、`admin_id`、`from_status`、`to_status`、`created_at` | 后台上下架留痕，只增不改；与状态更新同事务写入；同状态幂等调用不写日志；不设外键，保持课程可删除语义 |
 | `lesson` | `id`、`course_id`、`title`、`vod_file_id`、`duration_seconds`、`sort_order` | 归属唯一课程；课时不可单独售卖；`vod_file_id` 关联 `vod_media.file_id`；时长由媒资 / VOD 回填，`0` 表示尚未取得；列表按 `(sort_order, id)` 升序 |
-| `vod_media` | `id`、`file_id`、`video_name`、`duration_seconds`、`cover_url`、`uploader_id`、`status`、`fail_reason` | `file_id` 唯一；`status` 0=转码中 / 1=正常可用 / 2=失败；上传成功才写库，失败不产生脏记录 |
-| `order` | `id`、`order_no`、`user_id`、`course_id`、`amount`、`status`、`paid_at`、`created_at` | `order_no` 全局唯一；`status` 为 `pending` / `paid` / `closed` / `refunded` |
+| `vod_media` | `id`、`file_id`、`video_name`、`duration_seconds`、`cover_url`、`uploader_id`、`status`、`fail_reason` | `file_id` 唯一；`status` 0=转码中 / 1=正常可用 / 2=失败；来源为后台上传或从腾讯云 VOD 视频库手动入库；入库前校验 VOD 中仍存在，失败不产生脏记录 |
+| `order` | `id`、`order_no`、`user_id`、`course_id`、`amount`、`status`、`paid_at`、`source`、`product_id`、`mch_order_no`、`pay_env`、`pay_transaction_id`、`created_at` | `order_no` 全局唯一；`status` 为 `pending` / `paid` / `closed`（对外展示已取消）/ `refunded`（仅历史数据，不对外返回）；`source` 为 `wechat_pay` / `wx_vpay`；`mch_order_no` 与 `pay_transaction_id` 唯一；`pay_env` 为 `0` 正式 / `1` 沙箱 |
+| `vpay_products` | `id`、`product_id`、`env`、`course_id`、`price`、`enabled`、`remark`、`created_at`、`updated_at` | `(product_id, env)` 唯一；`env` 为 `0` 正式 / `1` 沙箱；`price`（分）是回调发货的唯一价格锚点；课程删除受 `RESTRICT` 保护 |
+| `xpay_push_logs` | `id`、`event_type`、`env`、`profile_env`、`out_trade_no`、`mch_order_no`、`product_id`、`openid`、`signature_ok`、`result`、`err_code`、`error_message`、`decision`、`raw_xml`、`decrypted_xml`、`created_at` | 虚拟支付推送审计，只增不改；`result` 为 `success` / `failed` / `ignored`；`decision` 为 `pass` / `block`；由 Redis 队列异步落库 |
+| `order_operation_logs` | `id`、`order_no`、`user_id`、`operator_user_id`、`operation_type`、`wechat_trade_state`、`wechat_response`、`error_message`、`created_at` | 取消 / 超时关单 / 对账留痕；`operation_type` 为 `manual_cancel` / `timeout_close` / `reconcile` / `reconcile_close`；保存微信交易状态与原始响应，只增不改 |
 | `user_course` | `id`、`user_id`、`course_id`、`source`、`valid_start_at`、`valid_end_at`、`created_at` | 联合唯一 `(user_id, course_id)`；`source` 枚举 `buy` / `gift`；有效期 UTC 存储，两列均为空表示永久有效 |
 | `user_course_log` | `id`、`admin_id`、`user_id`、`course_id`、`action`、`expire_time`、`valid_days`、`created_at` | 后台赠送 / 重置 / 收回课程留痕；`action` 为 `gift` / `reset` / `revoke`；只增不改 |
 | `study_record` | `id`、`user_id`、`lesson_id`、`last_position`、`is_finished`、`finished_at`、`updated_at` | 联合唯一 `(user_id, lesson_id)`；保存最近播放位置与首次看完时间 |
 | `admin_user` | `id`、`username`、`password_hash`、`role`、`created_at` | `username` 唯一；密码只存不可逆哈希；`role` 为 `super` / `normal`，默认 `super` |
-| `gift_log` | `id`、`admin_id`、`mobile`、`course_id`、`created_at` | 每次真实赠课留痕；记录操作管理员、手机号、课程、时间 |
+| `gift_log` | `id`、`admin_id`、`mobile`、`user_id`、`pregift_id`、`course_id`、`created_at` | 每次真实赠课留痕；直发时 `pregift_id` 为空，预赠认领时 `user_id` 与 `pregift_id` 均有值 |
+| `course_pregift` | `id`、`admin_id`、`phone`、`course_id`、`valid_start_at`、`valid_end_at`、`appointment_quota_count`、`claimed_user_id`、`claimed_at`、`claim_ip`、`created_at`、`updated_at` | 联合唯一 `(phone, course_id)`；认领前无 `user_id`、不产生 `user_course`；认领后永久归属该用户 |
+| `gift_claim_log` | `id`、`pregift_id`、`gift_log_id`、`phone`、`user_id`、`source_ip`、`created_at` | `pregift_id` 唯一；记录赠课 ID、手机号、认领用户、认领时间与来源 IP |
 | `system_config` | `id`、`config_key`、`config_value`、`default_value`、`description`、`updated_at` | `config_key` 唯一；默认值用于后台一键重置 |
 
 > 说明：`order` 是 MySQL 保留字。领域实体名保持 `order`，实现阶段需对物理表名使用反引号或统一映射为 `orders`，不影响本文档的领域语义。
@@ -201,7 +213,17 @@ beauty-course-mp/
 5. `study_record` 每个用户、每个课时只有一条记录，只更新最近位置，不统计学习时长与完成率。
 6. 系统配置只能修改预设文本项，Tab 数量固定为 2，禁止新增、删除或重排 Tab。
 7. 课时只能绑定媒资库中 `status=1` 的视频；转码中或失败的视频不得绑定。
-8. 同一 `vod_media.file_id` 可被多个课时复用，上传是媒资入库的唯一入口；课时只保存 FileId，不保存播放地址。
+8. 同一 `vod_media.file_id` 可被多个课时复用；媒资入库入口只有后台上传与 VOD 视频库手动入库，手动入库以 FileId 幂等并先校验 VOD 中仍存在；课时只保存 FileId，不保存播放地址。VOD 视频库对比只读，远程删除不会自动清理本地记录。
+9. `openid` 只存于 `user_bind_openid` 且唯一，`user` 主表不得出现 `openid` 列；手机号唯一，是账号信任基准。
+10. 预赠记录独立存于 `course_pregift`，认领前不写 `user_course`；`(phone, course_id)` 唯一，认领后 `claimed_user_id` 永久绑定且不再二次匹配。
+11. 课程权限、有效期与预约次数一律以最终 `user_id` 为准；预赠阶段只做手机号匹配，不归属任何账号。
+12. 课程状态只影响公开展示与购买：公开列表、热门、搜索只返回 `status=published`；草稿 / 已下架课程对已购用户仍可查看详情、播放与上报进度；状态不得影响 `user_course` 权益，支付回调也不做状态校验。
+13. 上下架只能通过 `PUT /admin/course/{id}/change-status` 改变，通用课程更新接口不得接受 `status`；后台列表默认返回全部状态，避免影响赠课、课时等课程下拉。
+14. 订单必须带 `source`：微信支付 v3 固定写 `wechat_pay`，虚拟支付固定写 `wx_vpay`；v3 查单、关单、对账与继续支付只处理 `wechat_pay`，虚拟支付订单不得进入 v3 流程（超时关单仅本地置 `closed`，不发微信请求）。
+15. 虚拟支付只认 `vpay_products` 映射：`(product_id, env)` 唯一且 `ActualPrice == price`、`Quantity == 1` 才发货；未映射/价格不符返回失败，绝不按请求自带金额发课。
+16. 虚拟支付幂等以 `mch_order_no` 优先、缺失回退 `out_trade_no`，叠加 Redis 键与数据库唯一约束（`order_no` / `mch_order_no` / `pay_transaction_id`）；已 `paid` 不重复发课，已 `refunded` 不补发。
+17. 虚拟支付回调不携带 JWT，只信任微信签名；审计报文异步写 `xpay_push_logs`，回调内不做慢任务。
+18. 下单金额固定取 `vpay_products.price` 且必须等于 `courses.price`；`AppKey` 与 `session_key` 只在服务端内存中使用，绝不返回前端、落库或写日志；客户端支付成功回调不发放任何权益。
 
 ---
 
@@ -219,15 +241,16 @@ beauty-course-mp/
 | 路由空间 | `/api/v1/client/*` | `/api/v1/admin/*` |
 | 校验依赖 | C 端专用鉴权依赖 | Admin 专用鉴权依赖 |
 
-两类 Token 不可互换：C 端 Token 访问后台接口必须 401，Admin Token 访问 C 端用户接口也必须 401。
+两类 Token 不可互换：C 端 Token 访问后台接口必须 401；Admin Token 访问 C 端用户接口被拒绝（公开只读接口返回 403 `USER_PERMISSION_DENIED`，其余按 C 端鉴权拒绝）。
 
 ### 6.2 访问规则
 
-- **免登录浏览**：首页、首页热门课程模块、系统配置读取接口。
-- **强制登录**：商学院课程广场、课程详情、视频播放页、个人中心、下单、播放鉴权、进度上报。
-- **手机号绑定**：可选能力。只影响能否被后台赠课，不影响登录、购买、播放。
+- **免登录浏览**：首页、首页热门课程模块、课程广场列表与课程详情（公开只读）、系统配置读取接口。首页永久公开，不因未登录而置灰、遮挡或跳转。
+- **强制登录**：我的课程、视频播放与播放鉴权、进度上报、预约、下单、个人资料修改。未登录访问这些操作时打开半屏「微信一键登录」弹窗，不跳转登录页。
+- **惰性微信登录**：需要身份的操作经 `useRequireAuth` 暂存原动作并打开 `WxAuthSheet`；登录成功后自动继续原跳转/动作，关闭弹窗则中止并停留当前页。点一次按钮同时获取 openid 与手机号授权；手机号是账号唯一信任基准，不同微信使用同一手机号自动合并到同一账号。不再提供独立登录页、短信验证码或单独绑定手机号入口。
+- **登录态校验**：`onLaunch`（冷启动）与 `onShow`（后台切回 / 右上角重新进入 / 下拉唤起）仅在本地存在 Token 时调用 `/auth/token-check`；`onShow` 2 秒防抖且复用进行中的请求，绝不重复微信登录或拉起手机号授权。无 Token 静默停留当前页；Token 失效时只清理本地缓存并停留当前页；任意业务接口返回 401 同样只清理登录态、不跳转、不自动弹窗。
 - **B 端**：除登录页外，所有后台路由和接口均需 Admin JWT；退出时同时清空 Token 与 Redux 状态。
-- **B 端角色**：`admin_user.role=super` 可上传媒资、同步转码状态、新建 / 编辑 / 删除课时；`role=normal` 仅可读取课程、课时、媒资、赠课日志、订单与配置。角色在每次请求时从数据库读取，调整后立即生效。
+- **B 端角色**：`admin_user.role=super` 可上传媒资、从 VOD 视频库手动入库、同步转码状态、新建 / 编辑 / 删除课时；`role=normal` 仅可读取课程、课时、本地媒资、VOD 视频库、赠课日志、订单与配置。角色在每次请求时从数据库读取，调整后立即生效。
 - **支付回调**：唯一免 JWT 的业务入口，仅允许微信签名校验，并独立校验商户号、订单存在性与金额。
 - **资源级权限**：登录只证明身份；课时是否解锁、能否获取 VOD 播放地址，必须继续校验 `user_course`。
 
@@ -236,22 +259,25 @@ beauty-course-mp/
 ```mermaid
 flowchart TD
     subgraph CS["C 端登录与鉴权"]
-        C1["小程序启动"] --> C2["wx.login 获取 code"]
-        C2 --> C3["POST /api/v1/client/auth/wx-login"]
-        C3 --> C4["后端 code2Session 换取 openid"]
-        C4 --> C5{"openid 是否存在？"}
-        C5 -->|"否"| C6["创建 user<br/>mobile = null"]
-        C5 -->|"是"| C7["读取既有 user"]
-        C6 --> C8["签发 C 端 JWT"]
-        C7 --> C8
-        C8 --> C9["redux-persist 持久化"]
-        C9 --> C10["请求头 Authorization: Bearer C-JWT"]
-        C10 --> C11["C 端专用密钥验签"]
-        C11 --> C12{"资源级权限校验<br/>user_course 是否存在"}
-        C12 -->|"是"| C13["返回数据 / 已签名播放地址"]
-        C12 -->|"否"| C14["课时加锁 / 引导购买"]
-        C9 -.->|"可选，用户主动触发"| C15["getPhoneNumber 授权"]
-        C15 --> C16["后端解密并写入 user.mobile"]
+        C1["小程序启动 / 浏览公开内容"] --> C2["无本地 Token → 停留当前页<br/>首页与课程广场公开可浏览"]
+        C2 --> C3["需要身份的操作 → 半屏微信一键登录<br/>Taro.login + getPhoneNumber"]
+        C3 --> C4["POST /api/v1/auth/wx-login"]
+        C4 --> C5["后端 code2session + phonenumber/get"]
+        C5 --> C6{"openid 已绑定？"}
+        C6 -->|"是"| C7["分支A：复用主账号<br/>手机号变化则更新"]
+        C6 -->|"否"| C8{"手机号已有账号？"}
+        C8 -->|"是"| C9["分支B-1：新 openid 并入老账号<br/>课程 / 订单 / 预约次数继承"]
+        C8 -->|"否"| C10["分支B-2：新建主账号"]
+        C7 --> C11["签发 C 端 JWT"]
+        C9 --> C11
+        C10 --> C11
+        C11 --> C12["storage: token / userInfo / openid<br/>redux-persist 持久化"]
+        C12 --> C13["请求头 Authorization: Bearer C-JWT"]
+        C13 --> C14["C 端专用密钥验签 + Redis 吊销名单"]
+        C14 --> C15{"资源级权限校验<br/>user_course 是否存在"}
+        C15 -->|"是"| C16["返回数据 / 已签名播放地址"]
+        C15 -->|"否"| C17["课时加锁 / 引导购买"]
+        C12 -.->|"冷启动 onLaunch / 热启动 onShow"| C18["POST /auth/token-check<br/>无 Token 静默；失效则清缓存并停留当前页"]
     end
 
     subgraph AS["B 端登录与鉴权"]
@@ -278,7 +304,7 @@ flowchart TD
 
 | 路由前缀 | 鉴权方式 | 说明 |
 | --- | --- | --- |
-| `/api/v1/client/auth/*` | 登录接口免 JWT；绑定手机号需 C 端 JWT | 微信静默登录、可选手机号绑定 |
+| `/api/v1/auth/*` | 免 JWT | 微信一键登录、冷启动 Token 校验、登出（吊销 Token） |
 | `/api/v1/client/*` | C 端 JWT（按接口要求） | 个人资料、课程、订单、播放鉴权、进度上报 |
 | `/api/v1/admin/*` | Admin JWT | 后台全部管理能力 |
 | `/api/v1/payments/wechat/notify` | 无 JWT，微信签名 | 微信支付异步回调 |
@@ -301,8 +327,11 @@ flowchart TD
 - 下单前校验登录、课程存在、是否已拥有；已拥有直接提示，不生成订单。
 - `order_no` 全局唯一，订单创建后状态为 `pending`。
 - 前端支付结果不作为发课依据，只以服务端订单状态为准。
-- 用户取消支付时订单维持 `pending`，可重新发起；下单满 30 分钟仍待支付的可通过 `/payments/close-order` 关闭为 `closed`。
-- 订单状态为 `pending` / `paid` / `closed` / `refunded`；`refunded` 仅保留历史数据，不提供退款接口。
+- 用户在微信收银台取消支付时订单维持 `pending`，可重新发起；用户也可在订单中心主动取消待支付订单。
+- 取消 / 超时关单一律**先查微信再动本地**：微信已支付则放弃取消并正常发课；未支付才调用微信 V3 关单并将本地置为 `closed`；无法确认时保持本地状态不变。
+- 定时任务默认每 5 分钟扫描一次，自动关闭创建超过 30 分钟仍待支付的订单（`ORDER_CLOSE_TIMEOUT_MINUTES` / `ORDER_CLOSE_SCAN_INTERVAL_SECONDS` 可配置），写入 `timeout_close` 日志，重复执行幂等。
+- 每日对账回看最近 7 天订单，向微信同步真实状态并修正本地不一致；只补发、不回收，不产生退款。
+- 对外订单状态只有 `pending` / `paid` / `closed`（已取消）；`refunded` 仅保留历史数据，不提供退款接口，也不对外返回。
 
 ```mermaid
 sequenceDiagram
@@ -345,15 +374,20 @@ sequenceDiagram
 - 回调验签通过后，以数据库行锁串行化同一订单处理；已 `paid` 直接返回成功。
 - 发课与订单状态更新同事务提交，避免“已扣款但未发课”或“已发课但订单未完成”。
 - 同一订单重复回调不得新增第二条 `user_course`，也不得重复累加任何权益。
+- 已 `paid` 订单的重复回调不补发缺失授权：授权缺失只可能来自后台收回或人工删除，自动补发会让已收回课程“复活”。
 - 前端轮询仅拉起状态刷新，不得绕过服务端权限判断直接解锁。
+- 支付回调、用户取消、超时关单、每日对账共用 Redis 分布式锁 `lock:order:{order_no}`（TTL 120 秒、等待 5 秒）与订单行锁，避免并发重复发课或重复关单。
+- 只有支付成功（回调或微信查单确认 `SUCCESS`）才发放课程权益、有效期与预约次数；取消 / 超时关单不发放、不回收、不触发预赠认领。
+- 每次取消、关单、对账尝试都写入 `order_operation_logs`，保存订单号、操作类型、微信交易状态、操作时间与微信原始响应，便于追溯。
 
-### 7.2 后台赠课幂等
+### 7.2 后台赠课幂等与手机号预赠
 
 **前置约束：**
 
-- 只允许匹配已绑定手机号的用户；未绑定手机号用户不可被赠课。
-- 同一手机号 + 同一课程只能存在一条 `user_course`。
-- 只有真实新增拥有关系时才写 `gift_log`；重复请求不产生新日志。
+- 赠课入口只有手机号，不支持按 openid 赠送；已注册手机号按 `user_id` 直发，未注册手机号进入预赠。
+- 同一手机号 + 同一课程只能存在一条有效发放：直发以 `user_course` 的 `(user_id, course_id)` 唯一约束去重，预赠以 `course_pregift` 的 `(phone, course_id)` 唯一约束去重。
+- 预赠认领前不写 `user_course`，不归属任何账号；认领后转为普通赠课，后续权限、有效期、预约次数全部按 `user_id` 计算。
+- 只有真实新增拥有关系或预赠记录时才留痕；重复请求不产生新日志。
 
 ```mermaid
 sequenceDiagram
@@ -361,31 +395,48 @@ sequenceDiagram
     participant ADMIN as 管理后台
     participant API as FastAPI Admin API
     participant DB as MySQL
+    participant LOGIN as 微信一键登录
 
     ADMIN->>API: POST /api/v1/admin/gifts（Admin JWT，mobile + course_id）
     API->>API: 校验管理员身份与参数
-    API->>DB: 按 mobile 查询已绑定用户
+    API->>DB: 按手机号查询用户
 
-    alt 未匹配到已绑定手机号用户
-        API-->>ADMIN: 该手机号用户未绑定小程序，无法赠课
-    else user_course 已存在
-        API-->>ADMIN: 幂等返回，不新增、不重复赠课
-    else 无 user_course 记录
-        API->>DB: 开启事务
-        API->>DB: 插入 user_course(source=gift)
-        API->>DB: 插入 gift_log(admin_id, mobile, course_id, created_at)
-        API->>DB: 提交事务
-        Note over API,DB: 并发下由 user_id + course_id 唯一约束兜底；冲突时回滚并按已拥有处理
-        API-->>ADMIN: 赠课成功
+    alt 命中唯一已注册用户
+        API->>DB: 查询 user_course(user_id, course_id)
+        alt 已拥有
+            API-->>ADMIN: 幂等返回 duplicate，不新增、不重复赠课
+        else 未拥有
+            API->>DB: 插入 user_course(source=gift) + gift_log(user_id)
+            API->>DB: 按课程预约次数发放 appointment quota
+            API-->>ADMIN: direct / delivered，赠课成功
+        end
+    else 手机号未注册
+        API->>DB: 查询 course_pregift(phone, course_id)
+        alt 已有待认领预赠
+            API-->>ADMIN: pre_gift / pending，幂等返回
+        else 已有已认领预赠
+            API-->>ADMIN: pre_gift / claimed，不重复发放
+        else 无预赠
+            API->>DB: 插入 course_pregift(phone, course_id, 有效期快照, 预约次数快照)
+            API-->>ADMIN: pre_gift / pending，等待用户首次授权登录
+        end
     end
 
-    Note over ADMIN,DB: 用户下次打开小程序时，课程权限由后端实时查询 user_course 得出
+    LOGIN->>API: POST /auth/wx-login（loginCode + phoneCode）
+    API->>API: openid 登录 / 同手机号账号合并
+    API->>DB: SELECT course_pregift WHERE phone=? AND claimed_user_id IS NULL FOR UPDATE
+    API->>DB: 逐条 upsert user_course(source=gift)、发预约次数、写 gift_log / gift_claim_log
+    API->>DB: 更新 claimed_user_id / claimed_at / claim_ip
+    API->>DB: 登录与全部认领同一事务提交
 ```
 
 **一致性要点：**
 
 - 先查后写仅用于友好提示，最终幂等依赖数据库唯一约束。
-- 若并发插入触发唯一约束冲突，事务回滚，按“已拥有”返回，不写第二条日志。
+- 直发并发冲突回滚后按“已拥有”处理；预赠并发冲突回滚后按已有预赠返回。
+- 登录与预赠认领在同一事务内提交：认领失败则登录回滚，客户端重试可安全重放；同一手机号的登录锁把并发认领串行化。
+- 多条预赠在首次登录时一次性全部认领；`gift_claim_log.pregift_id` 唯一保证同一条预赠不会重复留痕。
+- 预赠一旦认领永久归属该用户，不参与后续匹配；账号合并只影响 `user_id` 归属，不迁移或复制课程数据。
 - 赠课成功不推送、不修改用户客户端缓存；C 端每次进入相关页面以服务端权限为准。
 
 ### 7.3 视频播放与进度上报
@@ -479,7 +530,7 @@ sequenceDiagram
 
 ### 7.4 视频上传与媒资库
 
-**目标**：后台不再手工粘贴 FileId。管理员上传本地视频，服务端完成 VOD 上传并自动触发加密转码任务流；课件从媒资库选择已就绪的视频绑定。
+**目标**：后台不再手工粘贴 FileId。管理员上传本地视频，服务端完成 VOD 上传并自动触发加密转码任务流；也可在「VOD视频库」对比腾讯云已有视频后手动入库；课件从媒资库选择已就绪的视频绑定。
 
 ```mermaid
 sequenceDiagram
@@ -515,6 +566,8 @@ sequenceDiagram
 - **状态机**：转码任务全部完成 → `status=1`（任务显式返回 `FINISH`，或线上仅返回产物 `Url` 而无 `Status` 时视为完成）；仍有 `PROCESSING`、无产物地址或无任务 → `0`；任一任务 `ERROR` 或 `ErrCode≠0` → `2` 并记录 `fail_reason`。后台列表在有 `status=0` 记录时每 8 秒自动同步一次，全部完成即停止轮询；课时选择弹窗也仅在存在转码中视频时轮询。
 - **失败不产生脏数据**：Apply / PUT / Commit 任一失败返回 502，且不写 `vod_media`；同步失败保留原状态，不覆盖已有可用数据。
 - **媒体复用**：课时只绑定 `vod_media.file_id`，多个课时可复用同一视频；不能修改已有播放链路，播放鉴权仍按 `lessons.vod_file_id` + psign 签发，小程序无感知。
+- **VOD 视频库对比与入库**：`GET /admin/vod/remote-list` 调用 `SearchMedia`（`Categories=["Video"]`、`Offset`/`Limit`、创建时间倒序）拉取远程视频，与本地 `vod_media` 按 FileId 在内存中对比；`POST /admin/vod/import` 仅超级管理员可调用，以 FileId 幂等，入库前用 `DescribeMediaInfos` 校验远程仍存在，不存在返回 404 且不写库。对比只读，远程删除不会自动清理本地记录；后台只展示封面与元数据，不加载、不播放视频，也不下发 VOD 密钥或播放地址。
+- **VOD 错误处理**：`SearchMedia` / `DescribeMediaInfos` 的网络或接口错误统一转换为 `502 VOD_LIST_FAILED` / `502 VOD_IMPORT_FAILED`，日志只记录异常类型与 VOD 错误码，响应不包含密钥、请求头或原始堆栈。
 - **展示信息维护**：后台只能修改 `video_name`；封面由 VOD 自动截取视频首帧生成，不提供修改或上传入口。状态同步会以 VOD 首帧截图回填 `cover_url`，名称保留后台修改值。上传后只立即同步一次转码状态，封面在转码完成后由列表页轮询补全；FileId、时长、状态由 VOD 决定。
 - **删除边界**：删除只移除本地 `vod_media` 记录，不删除腾讯云 VOD 原文件；存在课时引用（`lessons.vod_file_id`）时返回 `409 VOD_MEDIA_IN_USE`，必须先解绑，保证已购用户播放不受影响。管理后台点击确认后立即关闭弹窗，失败结果通过页面顶部提示展示。
 - **时长与排序**：绑定课时时自动写入媒资时长（缺失时回查 VOD）；课时列表按 `sort_order`、`id` 升序，C 端课程详情课时列表使用同一排序。
@@ -531,6 +584,111 @@ sequenceDiagram
 - **完成标记**：`finish-lesson` 以 MySQL 为准写入 `is_finished` / `finished_at`，
   随后删除该课时的进度 Key 与脏集合成员；即使清理失败，下一次播放仍按
   `last_position=0` 开始，不会把用户卡在片尾。
+
+### 7.6 微信小程序虚拟支付（xpay）消息推送
+
+**边界：**
+
+- 回调接收：`GET/POST /api/wx/xpay/callback`，不计入 `/api/v1`，不使用 JWT；处理 `xpay_goods_deliver_notify`（发货）与 `xpay_subscribe_ios_refund_query_notify`（iOS 退款问询）。
+- 客户端下单签名：`POST /api/v1/payments/virtual/create-order`（C 端 JWT），服务端解析商品/课程/金额并返回 `wx.requestVirtualPayment` 参数。
+- 发货只认推送；客户端支付成功回调不发放任何权限。下单接口只创建 `pending` 订单，不发课。
+- 不提供退款发起能力；iOS 问询只做「是否允许退款」的被动应答。
+
+**下单与签名（payData）：**
+
+- 入参只有 `product_id` / `platform` / `login_code`；金额、课程与 `env` 全部由服务端重新解析，客户端不能指定。
+- `env` 规则：iOS 无沙箱恒为 `0`；安卓在 `APP_ENV=production` 时为 `0`，否则为 `1`（与回调「生产忽略沙箱推送」一致）。`platform` 不是安全边界。
+- `signData` 只序列化一次（`separators=(",", ":")`），签名与下发使用同一字符串：`paySig = hex(HMAC-SHA256(AppKey, "requestVirtualPayment&" + signData))`，`signature = hex(HMAC-SHA256(session_key, signData))`。
+- `session_key` 来自每次购买时新取的 `wx.login` code（code2session），仅在本次请求内存中使用：不落库、不写日志、不返回；`outTradeNo` 即本地 `order_no`，每单新生成。
+- 价格锚点：`vpay_products.price > 0` 且必须等于 `courses.price`，否则 409 `VPAY_PRICE_MISMATCH`，避免展示价与扣款价不一致。
+- 配置：`WECHAT_XPAY_OFFER_ID` + 按 env 选择的 AppKey；缺失返回 503 `PAYMENT_UNAVAILABLE`，日志只记缺失项名称，不回显任何密钥。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant MP as 小程序
+    participant API as FastAPI
+    participant WX as 微信虚拟支付
+    participant DB as MySQL
+
+    MP->>MP: 课程详情返回 vpay_product_id（价格一致的可用映射）
+    MP->>MP: wx.login() 取新 code
+    MP->>API: POST /payments/virtual/create-order
+    API->>API: 解析 env → 校验映射/课程/价格/未拥有
+    API->>WX: jscode2session（取 openid + session_key）
+    API->>DB: 写入 pending 订单（source=wx_vpay）
+    API-->>MP: order_no + signData + paySig + signature
+    MP->>WX: wx.requestVirtualPayment(...)
+    WX-->>MP: success / fail（仅面板结果）
+    MP->>MP: 跳转支付成功页，轮询 query-order
+    WX->>API: POST /api/wx/xpay/callback（发货推送）
+    API->>DB: pending/closed → paid + 发课
+    MP->>API: GET /payments/query-order/{order_no}
+    API-->>MP: paid → 刷新课程/我的课程
+```
+
+- 小程序内所有课程购买只走 `wx.requestVirtualPayment`（审核合规要求）；无 `vpay_product_id` 的付费课程不开放购买，禁止回退微信支付 v3；客户端不支持虚拟支付时只提示升级微信。
+- 订单中心：待支付订单没有可复用签名参数，不提供「继续支付 / 取消」，改为跳转课程详情 `?repurchase=1` 重新下单。
+
+**协议层：**
+
+- 正式/沙箱两套 `AppKey` / `MsgToken` / `EncodingAESKey`，按 `msg_signature` 自动命中 profile；两套 Token 与 AESKey 必须不同。
+- 安全模式：AES-256-CBC（`key=Base64Decode(EncodingAESKey + "=")`，`IV=key[:16]`，PKCS#7 32 字节块），明文结构为 `random(16) + msg_len(4B BE) + msg + appid`，校验 appid。
+- 外层 `msg_signature = SHA1(sort(token, timestamp, nonce, Encrypt))`；绝不能用普通 `signature` 校验加密报文。
+- XML 解析使用 `defusedxml`，禁用 DTD/实体；响应一律 XML，POST 始终 HTTP 200。
+- 审计：完整原始报文、验签结果、解密后内容、关键字段；绝不打印 Token/AESKey/AppKey。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WX as 微信虚拟支付
+    participant API as FastAPI
+    participant RD as Redis
+    participant DB as MySQL
+
+    WX->>API: POST /api/wx/xpay/callback（安全模式 XML）
+    API->>API: 按 msg_signature 命中 prod/sandbox profile
+    API->>API: AES 解密 + appid 校验 + 字段解析
+    API->>API: 环境策略（生产收到 Env=1 直接忽略成功）
+    API->>DB: 查 vpay_products(product_id, env) 与价格锚点
+    API->>RD: GET xpay:deliver:{env}:{mch_order_no|out_trade_no}
+    alt 幂等命中
+        API->>RD: LPUSH xpay:jobs（审计）
+        API-->>WX: ErrCode=0
+    else 首次处理
+        API->>DB: 短事务解析/创建无手机号用户 + openid 绑定
+        API->>DB: 发货事务：订单行锁 → 建/更新订单 → user_course + 预约次数
+        API->>RD: SET 幂等键（30 天）
+        API->>RD: LPUSH xpay:jobs（审计）
+        API-->>WX: ErrCode=0
+    end
+    Note over API,RD: xpay-jobs 消费者 BRPOP 后异步写 xpay_push_logs
+```
+
+**数据与幂等：**
+
+- 映射表 `vpay_products`：`(product_id, env)` 唯一，`price` 为分；`env=0` 正式、`1` 沙箱。回调的 `ActualPrice` 必须严格等于映射价格，`Quantity` 必须为 1。
+- 订单：`order_no = OutTradeNo`、`source=wx_vpay`、`mch_order_no` 唯一、`pay_env` 记录环境、`pay_transaction_id=TransactionId`、`paid_at` 由 `PaidTime` 转 UTC naive。
+- 幂等三层：Redis 快路径（best-effort）→ 订单行锁 → 数据库唯一约束；Redis 故障或锁超时都继续处理，不阻断发货。
+- 已 `paid`：不补发授权（避免复活后台已收回课程），只幂等补预约次数与支付流水；已 `refunded`：返回成功但不补发；`pending/closed`：置为 `paid` 并发课。
+- 发课与 v3 共用 `pay_service.grant_paid_order_access`：无授权则新增，过期则续期，有效则不覆盖，预约次数按订单幂等发放。
+
+**无手机号静默用户：**
+
+- 先支付后登录必然产生 `mobile=NULL` 用户；按 openid 建 `user` + `user_bind_openid`，并发唯一冲突回滚重查。
+- 用户后续用同一微信手机号登录时，登录服务按 openid 复用该账号并补手机号，订单与课程自然继承；换另一个微信登录则无法自动合并，属既定产品行为。
+
+**iOS 退款问询：**
+
+- 本地查单：`pay_order_id → pay_transaction_id`，再 `channel_bill → order_no`；`product_id` 只作证据，不能据此判定已发货。
+- 查询用 `asyncio.wait_for(timeout=2s)`；超时/异常/字段非法一律保守拦截（`result_code=1`）。
+- 决策表与回复格式见 [API.md](API.md#574-ios-退款问询应答)；安全模式回复加密外层，明文模式直接返回内层 XML。
+
+**与 v3 隔离：**
+
+- `order_close` 的 v3 扫描条件限定 `source=wechat_pay`；`wx_vpay` 超时 pending 订单由同一任务**仅本地**置为 `closed`（有行锁，不调用任何微信接口），晚到推送仍按 `closed → paid` 发课。`order_reconcile` 仍完全跳过 `wx_vpay`。
+- `pay_service` 的查单、关单、取消与继续支付对 `wx_vpay` 订单直接返回/拒绝（`409 ORDER_NOT_PAYABLE`），绝不调用微信支付 v3；`query-order` 对虚拟支付只读本地状态。
+- C 端订单中心不按 `source` 过滤，虚拟支付已支付订单直接出现在【我的订单】；后台订单列表新增 `source` 字段用于区分渠道。
 
 ---
 
@@ -560,6 +718,7 @@ sequenceDiagram
 - 当前生产编排：`deploy/docker-compose.prod.yml` 提供 FastAPI、MySQL、Redis、Nginx；后续加入 Worker，Worker 必须单实例或使用分布式锁，避免定时任务重复执行。
 - MySQL、Redis 使用持久化数据卷；生产密钥通过环境变量或挂载密钥文件注入。
 - 支付回调必须为公网可达的 HTTPS 地址，并配置在微信支付商户平台。
+- 虚拟支付消息推送固定 `https://api.qinghebacademy.cn/api/wx/xpay/callback`；Nginx 对该路径做精确匹配（48 KiB 请求体、15 秒超时），不继承视频上传的 2 GB / 600 秒配置。若启用多个 FastAPI 副本，每个副本都会启动审计消费者，`xpay_push_logs` 可能重复；需要单实例消费者时拆出 Worker 或关闭其余副本的任务。
 - C 端图片走 COS/CDN，视频走腾讯 VOD，不经后端转发媒体流。
 
 ### 9.3 环境变量
@@ -575,9 +734,10 @@ sequenceDiagram
 ### 10.1 允许实现
 
 - C 端：首页、商学院课程广场、课程详情、视频播放页、个人中心。
-- B 端：管理员登录/退出、课程管理、课时管理、媒资上传与复用、赠课发放、用户课程管理（赠送 / 重置有效期 / 收回）、赠课日志查询、订单查询、系统配置管理。
-- 登录：微信静默登录、可选手机号绑定。
+- B 端：管理员登录/退出、课程管理、课时管理、媒资上传与复用、赠课发放（按手机号直发 / 手机号预赠）、用户课程管理（赠送 / 重置有效期 / 收回）、预赠与赠课日志查询、订单查询、系统配置管理。
+- 登录：微信一键登录（openid + 手机号授权）、同手机号账号自动合并、冷启动与热启动 Token 校验、业务接口 401 统一登出、登出吊销。
 - 交易：整课购买、微信支付、支付回调幂等发课、订单查询。
+- 虚拟支付：小程序虚拟支付消息推送接收（发货、iOS 退款问询应答、商品映射与审计）。
 - 学习：VOD 鉴权播放、15 秒进度上报、Redis 缓冲、批量落库、续播。
 
 ### 10.2 严禁实现
@@ -594,13 +754,13 @@ sequenceDiagram
 
 开发与验收时逐项核对：
 
-1. `user.openid` 唯一，`mobile` 允许为空。
+1. `user.phone` 唯一，`user_bind_openid.openid` 唯一；`user` 主表不存 `openid`。
 2. 首页热门课程与系统配置可免登录读取；课程广场、详情、播放强制登录。
 3. C 端 JWT 与 Admin JWT 使用不同密钥、不同存储、不同路由空间。
 4. 支付回调不做 JWT 鉴权，只做微信签名校验；回调处理必须幂等，已支付订单不重复发课。
-5. `order.order_no` 全局唯一，`order.pay_transaction_id` 全局唯一；订单状态为 `pending` / `paid` / `closed` / `refunded`，取消支付不改变状态，超时关单置为 `closed`。
+5. `order.order_no` 全局唯一，`order.pay_transaction_id` 全局唯一；对外订单状态为 `pending` / `paid` / `closed`（已取消），历史 `refunded` 不对外返回；仅待支付订单可取消或超时关闭，且必须微信侧确认未支付后才置为 `closed`，已支付则转为 `paid` 并发课。
 6. `user_course` 联合唯一 `(user_id, course_id)`，`source` 仅 `buy` / `gift`。
-7. 赠课只能匹配已绑定手机号用户；后台重复赠课 / 重置有效期不新增拥有关系，只更新有效期并写入操作日志；收回权限需删除授权并留痕。
+7. 赠课只按手机号匹配：已注册直发到 `user_id`，未注册写入 `course_pregift`；预赠在首次授权该手机号登录时原子认领并永久归属；重复赠课 / 重置有效期不新增拥有关系；收回权限需删除授权并留痕。
 8. 课时解锁与 VOD 播放地址必须经过服务端 `user_course` 校验。
 9. 播放进度先写 Redis，Worker 周期批量 upsert；`study_record` 联合唯一 `(user_id, lesson_id)`，只存最近位置。
 10. `system_config.config_key` 唯一；Tab 固定 2 个，只允许修改文字；前端必须有默认配置兜底。

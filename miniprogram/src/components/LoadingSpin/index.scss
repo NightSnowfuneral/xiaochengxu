@@ -1,0 +1,106 @@
+/* 参考 antd Spin：四个圆点绕中心旋转并依次呼吸，比单圈边框更清晰。 */
+.loading-spin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-spin__indicator {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  animation: loading-spin-rotate 1.2s linear infinite;
+}
+
+.loading-spin__dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e2c084;
+  opacity: 0.28;
+  animation: loading-spin-pulse 1.2s ease-in-out infinite;
+}
+
+.loading-spin__dot--1 {
+  top: 0;
+  left: 50%;
+  margin-left: -5px;
+  animation-delay: 0s;
+}
+
+.loading-spin__dot--2 {
+  top: 50%;
+  right: 0;
+  margin-top: -5px;
+  animation-delay: 0.3s;
+}
+
+.loading-spin__dot--3 {
+  bottom: 0;
+  left: 50%;
+  margin-left: -5px;
+  animation-delay: 0.6s;
+}
+
+.loading-spin__dot--4 {
+  top: 50%;
+  left: 0;
+  margin-top: -5px;
+  animation-delay: 0.9s;
+}
+
+.loading-spin__tip {
+  margin-top: 16px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 22px;
+  letter-spacing: 1px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* 全屏横屏下画面高度有限，加载指示器同步缩小。 */
+.loading-spin--compact .loading-spin__indicator {
+  width: 30px;
+  height: 30px;
+}
+
+.loading-spin--compact .loading-spin__dot {
+  width: 7px;
+  height: 7px;
+}
+
+.loading-spin--compact .loading-spin__dot--1,
+.loading-spin--compact .loading-spin__dot--3 {
+  margin-left: -3.5px;
+}
+
+.loading-spin--compact .loading-spin__dot--2,
+.loading-spin--compact .loading-spin__dot--4 {
+  margin-top: -3.5px;
+}
+
+.loading-spin--compact .loading-spin__tip {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+@keyframes loading-spin-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loading-spin-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.82);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}

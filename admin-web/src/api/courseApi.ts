@@ -1,6 +1,7 @@
 import type {
   Course,
   CourseCreatePayload,
+  CourseStatus,
   CourseUpdatePayload,
   ImagePresignResult,
   MessageResponse,
@@ -14,6 +15,8 @@ export interface AdminCourseListParams {
   keyword?: string
   /** 传 true 只看热门；不传或 false 表示全部，因此调用方只在需要时传 true。 */
   is_hot_topic?: boolean
+  /** 不传返回全部状态。 */
+  status?: CourseStatus
 }
 
 export function listAdminCourses(
@@ -24,7 +27,8 @@ export function listAdminCourses(
       page: params.page,
       page_size: params.page_size,
       keyword: params.keyword?.trim(),
-      is_hot_topic: params.is_hot_topic
+      is_hot_topic: params.is_hot_topic,
+      status: params.status
     })
   })
 }
@@ -48,6 +52,14 @@ export function updateAdminCourse(
 
 export function deleteAdminCourse(courseId: number): Promise<MessageResponse> {
   return apiDelete<MessageResponse>(`/admin/courses/${courseId}`)
+}
+
+/** 上下架课程；接口使用需求指定的单数路径。 */
+export function changeAdminCourseStatus(
+  courseId: number,
+  status: CourseStatus
+): Promise<Course> {
+  return apiPut<Course>(`/admin/course/${courseId}/change-status`, { status })
 }
 
 export interface ImagePresignParams {

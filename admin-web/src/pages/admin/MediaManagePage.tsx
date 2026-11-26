@@ -37,12 +37,12 @@ import {
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
-  PlayCircleOutlined,
   ReloadOutlined,
   SyncOutlined
 } from '@ant-design/icons'
 
 import { getErrorMessage } from '../../api/request'
+import MediaCover from '../../components/admin/MediaCover'
 import AdminPageHeader from '../../components/admin/PageHeader'
 import { MediaStatusTag } from '../../components/admin/StatusTags'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
@@ -82,75 +82,6 @@ interface MediaRenameValues {
   video_name: string
 }
 
-interface MediaCoverProps {
-  media: VodMedia
-  height?: number
-}
-
-function MediaCover({ media, height = 152 }: MediaCoverProps) {
-  const [broken, setBroken] = useState(false)
-  const showImage = Boolean(media.cover_url) && !broken
-
-  return (
-    <div
-      style={{
-        position: 'relative',
-        height,
-        overflow: 'hidden',
-        borderRadius: 8,
-        background:
-          'linear-gradient(135deg, #1b2942 0%, #0d1526 60%, #131e33 100%)'
-      }}
-    >
-      {showImage ? (
-        <img
-          src={media.cover_url ?? ''}
-          alt={`${media.video_name} 封面`}
-          loading="lazy"
-          onError={() => setBroken(true)}
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-      ) : (
-        <div
-          style={{
-            display: 'flex',
-            height: '100%',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 6,
-            color: 'rgba(255,255,255,0.45)',
-            fontSize: 12
-          }}
-        >
-          <PlayCircleOutlined style={{ fontSize: 28 }} />
-          {media.status === 0 ? '转码中，封面稍后生成' : '暂无封面'}
-        </div>
-      )}
-
-      <div style={{ position: 'absolute', top: 8, left: 8 }}>
-        <MediaStatusTag status={media.status} />
-      </div>
-
-      <div
-        style={{
-          position: 'absolute',
-          right: 8,
-          bottom: 8,
-          padding: '1px 8px',
-          borderRadius: 999,
-          background: 'rgba(13,21,38,0.78)',
-          color: '#fff',
-          fontSize: 11,
-          fontVariantNumeric: 'tabular-nums'
-        }}
-      >
-        {formatDuration(media.duration_seconds)}
-      </div>
-    </div>
-  )
-}
-
 interface MediaPreviewModalProps {
   media: VodMedia | null
   onClose: () => void
@@ -168,7 +99,16 @@ function MediaPreviewModal({ media, onClose }: MediaPreviewModalProps) {
     >
       {media ? (
         <>
-          <MediaCover media={media} height={260} />
+          <MediaCover
+            coverUrl={media.cover_url}
+            title={media.video_name}
+            height={260}
+            durationSeconds={media.duration_seconds}
+            badge={<MediaStatusTag status={media.status} />}
+            emptyText={
+              media.status === 0 ? '转码中，封面稍后生成' : '暂无封面'
+            }
+          />
 
           {media.status === 2 && media.fail_reason ? (
             <Alert
@@ -534,7 +474,16 @@ export default function MediaManagePage() {
       width: 130,
       render: (_value, media) => (
         <div style={{ width: 104 }}>
-          <MediaCover media={media} height={60} />
+          <MediaCover
+            coverUrl={media.cover_url}
+            title={media.video_name}
+            height={60}
+            durationSeconds={media.duration_seconds}
+            badge={<MediaStatusTag status={media.status} />}
+            emptyText={
+              media.status === 0 ? '转码中' : '暂无封面'
+            }
+          />
         </div>
       )
     },
@@ -622,7 +571,15 @@ export default function MediaManagePage() {
         styles={{ body: { padding: 12 } }}
         onClick={() => setPreviewTarget(media)}
       >
-        <MediaCover media={media} />
+        <MediaCover
+          coverUrl={media.cover_url}
+          title={media.video_name}
+          durationSeconds={media.duration_seconds}
+          badge={<MediaStatusTag status={media.status} />}
+          emptyText={
+            media.status === 0 ? '转码中，封面稍后生成' : '暂无封面'
+          }
+        />
         <div style={{ marginTop: 10 }}>
           <Tooltip title={media.video_name}>
             <Typography.Text

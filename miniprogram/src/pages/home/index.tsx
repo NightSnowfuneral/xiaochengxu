@@ -1,21 +1,21 @@
 import { useEffect } from 'react'
-import { Button, ScrollView, Text, View } from '@tarojs/components'
+import { ScrollView, Text, View } from '@tarojs/components'
 import Taro, { usePullDownRefresh } from '@tarojs/taro'
 
 import CourseIconGrid, {
   type CourseIconItem
 } from '../../components/CourseIconGrid'
 import HotTopicCard from '../../components/HotTopicCard'
-import LoginModal from '../../components/LoginModal'
 import MockModeBadge from '../../components/MockModeBadge'
+import WxAuthSheet from '../../components/WxAuthSheet'
 import { HOT_COURSE_PAGE_SIZE } from '../../constants'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { fetchConfigs } from '../../store/slices/configSlice'
 import { fetchHotCourses } from '../../store/slices/courseSlice'
-import { openLoginModal } from '../../utils/loginModal'
 import {
-  goAcademy,
+  goAppointment,
   goCourseDetail,
   goCourseList,
   goProfile
@@ -25,9 +25,9 @@ import './index.scss'
 
 const iconItems: CourseIconItem[] = [
   {
-    key: 'academy',
-    label: '课程广场',
-    icon: '📚',
+    key: 'appointment',
+    label: '我的预约',
+    icon: '📅',
     background: '#f3e4c9'
   },
   {
@@ -53,93 +53,65 @@ const iconItems: CourseIconItem[] = [
 export default function HomePage() {
   const dispatch = useAppDispatch()
   const config = useSystemConfig()
-  const token = useAppSelector((state) => state.user.token)
+  const { requireAuth } = useRequireAuth()
   const isMockLogin = useAppSelector((state) => state.user.isMockLogin)
   const hot = useAppSelector((state) => state.course.hot)
 
   useEffect(() => {
-    if (token) {
-      void dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
+    // 热门课程是公开内容，未登录也要按首页原样展示。
+    void dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
+  }, [dispatch])
+
+  useEffect(() => {
+    if (config.home_page_title) {
+      void Taro.setNavigationBarTitle({ title: config.home_page_title })
     }
-  }, [dispatch, token])
+  }, [config.home_page_title])
 
   usePullDownRefresh(() => {
     const tasks: Array<Promise<unknown>> = [
-      dispatch(fetchConfigs()).unwrap().catch(() => undefined)
+      dispatch(fetchConfigs()).unwrap().catch(() => undefined),
+      dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
+        .unwrap()
+        .catch(() => undefined)
     ]
-    if (token) {
-      tasks.push(
-        dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
-          .unwrap()
-          .catch(() => undefined)
-      )
-    }
     void Promise.all(tasks).finally(() => {
       void Taro.stopPullDownRefresh()
     })
   })
 
-  const requireLogin = (): boolean => {
-    if (token) {
-      return true
-    }
-    openLoginModal('登录后即可查看课程')
-    return false
-  }
-
   const handleIconSelect = (item: CourseIconItem) => {
     switch (item.key) {
-      case 'academy':
-        goAcademy()
+      case 'appointment':
+        requireAuth(goAppointment, '登录后即可查看我的预约')
         break
       case 'all-courses':
-        if (requireLogin()) {
-          goCourseList()
-        }
+        requireAuth(() => goCourseList(), '登录后即可查看全部课程')
         break
       case 'my-courses':
-        if (requireLogin()) {
-          goCourseList({ mode: 'mine' })
-        }
+        requireAuth(
+          () => goCourseList({ mode: 'mine' }),
+          '登录后即可查看我的课程'
+        )
         break
       case 'profile':
-        goProfile()
+        requireAuth(goProfile, '登录后查看个人中心')
         break
       default:
         break
     }
   }
 
+  // 热门课程与详情都是公开内容，点击直接进入，不在这里拉起登录弹窗。
   const handleMore = () => {
-    if (requireLogin()) {
-      goCourseList({ mode: 'hot' })
-    }
+    goCourseList({ mode: 'hot' })
   }
 
   const handleHotCourse = (courseId: number) => {
-    if (requireLogin()) {
-      goCourseDetail(courseId)
-    }
+    goCourseDetail(courseId)
   }
 
   const renderHotContent = () => {
-    if (!token) {
-      return (
-        <View className='home-login-card'>
-          <Text className='home-login-card__title'>登录后查看热门课程</Text>
-          <Text className='home-login-card__desc'>
-            微信一键登录，购买课程后解锁全部课时。
-          </Text>
-          <Button
-            className='home-login-card__button'
-            onClick={() => openLoginModal('登录后即可查看课程')}
-          >
-            去登录
-          </Button>
-        </View>
-      )
-    }
-
     if (hot.status === 'loading' && !hot.items.length) {
       return <View className='loading-line'>正在加载热门课程…</View>
     }
@@ -201,7 +173,7 @@ export default function HomePage() {
           {config.home_page_title || '禾下美学院'}
         </Text>
         <Text className='home-hero__subtitle'>
-          以系统课程，点亮每一次成长
+          {config.home_subtitle || '以系统课程，点亮每一次成长'}
         </Text>
         {config.home_notice ? (
           <View className='home-hero__notice'>
@@ -228,11 +200,13 @@ export default function HomePage() {
       </View>
 
       <View className='home-footer'>
-        <Text className='home-footer__brand'>禾下美学院</Text>
+        <Text className='home-footer__brand'>
+          {config.home_page_title || '禾下美学院'}
+        </Text>
         <Text className='home-footer__text'>课程内容均已获得授权</Text>
       </View>
 
-      <LoginModal />
+      <WxAuthSheet />
     </View>
   )
 }

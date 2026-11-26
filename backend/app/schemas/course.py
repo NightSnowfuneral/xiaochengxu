@@ -7,6 +7,7 @@ from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
 
+from ..models.enums import CourseStatus
 from .common import PageQuery, RequestSchema, ResponseSchema
 from .lesson import LessonBrief
 
@@ -36,6 +37,12 @@ class CourseCreateRequest(RequestSchema):
         default=False,
         description="是否展示在首页热门课程板块",
     )
+    appointment_quota: int = Field(
+        default=0,
+        ge=0,
+        le=1000,
+        description="购买 / 赠课附赠的专项指导预约次数",
+    )
 
 
 class CourseUpdateRequest(RequestSchema):
@@ -49,6 +56,7 @@ class CourseUpdateRequest(RequestSchema):
     cover_small: ImageUrl | None = None
     icon_url: ImageUrl | None = None
     is_hot_topic: bool | None = None
+    appointment_quota: int | None = Field(default=None, ge=0, le=1000)
 
     @model_validator(mode="after")
     def require_at_least_one_field(self) -> CourseUpdateRequest:
@@ -69,8 +77,25 @@ class CourseResponse(ResponseSchema):
     cover_small: str
     icon_url: str
     is_hot_topic: bool
+    appointment_quota: int
     created_at: datetime
     updated_at: datetime
+
+
+class AdminCourseResponse(CourseResponse):
+    """后台课程详情 / 列表项，额外返回上下架状态。
+
+    不要把这个字段并入 CourseResponse：CourseDetailResponse 继承
+    CourseResponse，状态会泄露到 C 端。
+    """
+
+    status: CourseStatus
+
+
+class CourseStatusChangeRequest(RequestSchema):
+    """后台上下架课程。"""
+
+    status: CourseStatus
 
 
 class CourseListItem(ResponseSchema):
@@ -90,10 +115,17 @@ class CourseDetailResponse(CourseResponse):
 
     is_owned 必须由服务端基于 user_course 实时判断，前端不得自行推断；
     lessons 为全量课时，购买后全部解锁。
+    vpay_product_id 仅供前端下单入参：仅在该课程存在价格与课程价一致
+    的可用商品映射时下发；服务端下单时会按课程与环境重新解析，绝不
+    信任前端回传的值。
     """
 
     lessons: list[LessonBrief]
     is_owned: bool
+    vpay_product_id: str | None = Field(
+        default=None,
+        description="可用的虚拟支付商品 ID；为空表示走普通微信支付",
+    )
 
 
 class CourseListQuery(PageQuery):
@@ -117,12 +149,24 @@ class CourseListQuery(PageQuery):
         return value
 
 
+class AdminCourseListQuery(CourseListQuery):
+    """后台课程列表筛选；C 端不可见状态参数。"""
+
+    status: CourseStatus | None = Field(
+        default=None,
+        description="按上下架状态筛选；不传返回全部",
+    )
+
+
 __all__ = [
+    "AdminCourseListQuery",
+    "AdminCourseResponse",
     "CourseCreateRequest",
     "CourseDetailResponse",
     "CourseListItem",
     "CourseListQuery",
     "CourseResponse",
+    "CourseStatusChangeRequest",
     "CourseUpdateRequest",
     "ImageUrl",
 ]

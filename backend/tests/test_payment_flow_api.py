@@ -79,6 +79,15 @@ def _successful_query_payload(
     }
 
 
+def _notpay_query_payload(*, order_no: str) -> dict[str, object]:
+    return {
+        "appid": settings.wechat_app_id,
+        "mchid": settings.wechat_pay_mch_id,
+        "out_trade_no": order_no,
+        "trade_state": "NOTPAY",
+    }
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -307,7 +316,9 @@ async def test_close_order_marks_expired_pending_order_closed(
         openid=user_account.openid,
         created_at=_now() - timedelta(minutes=31),
     )
-    fake_client = FakeWeChatPayClient()
+    fake_client = FakeWeChatPayClient(
+        query_payload=_notpay_query_payload(order_no=order_no),
+    )
     monkeypatch.setattr(pay_service, "_get_client_sync", lambda: fake_client)
     headers = auth_headers(create_user_access_token(user_account.id))
 
@@ -367,7 +378,8 @@ async def test_close_order_syncs_when_wechat_already_paid(
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "paid"
-    assert fake_client.close_calls == 1
+    # 查单优先：确认已支付后放弃取消，不再调用微信关单。
+    assert fake_client.close_calls == 0
     assert fake_client.query_calls == 1
 
 

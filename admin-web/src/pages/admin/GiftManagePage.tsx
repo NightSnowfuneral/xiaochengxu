@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
   Alert,
@@ -35,10 +35,16 @@ import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import {
   clearGrantFeedback,
   fetchGiftLogs,
+  fetchPregifts,
   grantGift,
   selectGift
 } from '../../store/slices/giftSlice'
-import type { GiftLog, GiftLogFilters, GiftValidity } from '../../types'
+import type {
+  AdminPregift,
+  GiftLog,
+  GiftLogFilters,
+  GiftValidity
+} from '../../types'
 import { formatDateTime } from '../../utils/format'
 import { isValidMobile, parsePositiveInt } from '../../utils/validation'
 
@@ -77,7 +83,13 @@ export default function GiftManagePage() {
     loading,
     error,
     granting,
-    grantError
+    grantError,
+    pregifts,
+    pregiftTotal,
+    pregiftPage,
+    pregiftPageSize,
+    pregiftLoading,
+    pregiftError
   } = useAppSelector(selectGift)
 
   const [filterForm] = Form.useForm<GiftFilterValues>()
@@ -100,9 +112,19 @@ export default function GiftManagePage() {
     )
   }
 
+  const loadPregifts = (nextPage = 1, nextPageSize = pregiftPageSize) => {
+    void dispatch(
+      fetchPregifts({
+        page: nextPage,
+        pageSize: nextPageSize
+      })
+    )
+  }
+
   useEffect(() => {
     loadLogs(1, 20, {})
-    // 首次进入加载默认日志。
+    loadPregifts(1, 20)
+    // 首次进入加载默认日志与预赠记录。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch])
 
@@ -177,15 +199,31 @@ export default function GiftManagePage() {
       ).unwrap()
 
       setGiftOpen(false)
+      if (result.mode === 'pre_gift') {
+        if (result.status === 'pending' && result.gifted) {
+          message.success(
+            `手机号预赠成功：用户首次使用 ${result.mobile} 授权登录后自动到账`
+          )
+        } else if (result.status === 'pending') {
+          message.info('该手机号已有同一课程的待认领预赠，未重复发放')
+        } else {
+          message.info('该预赠已被认领，未重复发放')
+        }
+        loadPregifts(1, pregiftPageSize)
+        return
+      }
+
       if (result.gifted) {
         message.success(
-          `赠课成功：手机号 ${result.mobile} 已获得课程 #${result.course_id}`
+          `赠课成功：手机号 ${result.mobile} 已直接到账${
+            result.user_id ? `（用户 #${result.user_id}）` : ''
+          }`
         )
       } else {
         message.info('该用户已拥有该课程，本次为幂等请求，未重复发放')
       }
 
-      // 成功后自动把日志筛选定位到该手机号 + 课程，便于核对本次结果。
+      // 直发成功后把日志筛选定位到该手机号 + 课程，便于核对本次结果。
       filterForm.setFieldsValue({
         mobile: result.mobile,
         courseId: result.course_id
@@ -196,6 +234,7 @@ export default function GiftManagePage() {
         mobile: result.mobile,
         course_id: result.course_id
       })
+      loadPregifts(1, pregiftPageSize)
     } catch {
       // 失败详情使用弹窗内 grantError Alert 持续展示。
     }
@@ -204,6 +243,111 @@ export default function GiftManagePage() {
   const handlePageChange = (nextPage: number, nextPageSize: number) => {
     loadLogs(nextPage, nextPageSize, filters)
   }
+
+  const pregiftColumns: ColumnsType<AdminPregift> = [
+    {
+      title: '预赠 ID',
+      dataIndex: 'id',
+      key: 'id',
+      width: 90,
+      render: (value: number) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          #{value}
+        </Typography.Text>
+      )
+    },
+    {
+      title: '手机号 / 状态',
+      key: 'mobile',
+      width: 200,
+      render: (_value, record) => (
+        <Space direction="vertical" size={2}>
+          <Typography.Text strong copyable={{ text: record.mobile }}>
+            {record.mobile}
+          </Typography.Text>
+          {record.status === 'claimed' ? (
+            <Tag color="green" bordered={false} style={{ borderRadius: 999 }}>
+              已认领
+              {record.claimed_user_id
+                ? ` · 用户 #${record.claimed_user_id}`
+                : ''}
+            </Tag>
+          ) : (
+            <Tag color="gold" bordered={false} style={{ borderRadius: 999 }}>
+              待认领
+            </Tag>
+          )}
+        </Space>
+      )
+    },
+    {
+      title: '课程',
+      key: 'course',
+      ellipsis: true,
+      render: (_value, record) => (
+        <div style={{ minWidth: 0 }}>
+          <Typography.Text ellipsis style={{ display: 'block', maxWidth: 260 }}>
+            {record.course_title || `课程 #${record.course_id}`}
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            课程 #{record.course_id} · 预约次数 {record.appointment_quota_count}
+          </Typography.Text>
+        </div>
+      )
+    },
+    {
+      title: '有效期',
+      key: 'validity',
+      width: 180,
+      render: (_value, record) =>
+        record.valid_end_at ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            至 {formatDateTime(record.valid_end_at)}
+          </Typography.Text>
+        ) : (
+          <Tag bordered={false} style={{ borderRadius: 999 }}>
+            永久有效
+          </Tag>
+        )
+    },
+    {
+      title: '预赠管理员 / 时间',
+      key: 'admin',
+      width: 200,
+      render: (_value, record) => (
+        <div>
+          <Typography.Text style={{ fontSize: 13 }}>
+            {record.admin_username || '—'}
+          </Typography.Text>
+          <div style={{ fontSize: 11, color: '#a8a29e' }}>
+            {formatDateTime(record.created_at)}
+          </div>
+        </div>
+      )
+    },
+    {
+      title: '认领信息',
+      key: 'claim',
+      width: 210,
+      render: (_value, record) =>
+        record.claimed_at ? (
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {formatDateTime(record.claimed_at)}
+            </Typography.Text>
+            {record.claim_ip ? (
+              <div style={{ fontSize: 11, color: '#a8a29e' }}>
+                IP {record.claim_ip}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            用户首次授权手机号登录时自动认领
+          </Typography.Text>
+        )
+    }
+  ]
 
   const columns: ColumnsType<GiftLog> = [
     {
@@ -227,7 +371,8 @@ export default function GiftManagePage() {
               {log.mobile}
             </Typography.Text>
             <div style={{ fontSize: 11, color: '#a8a29e' }}>
-              赠课日志未返回昵称与头像
+              {log.user_id ? `用户 #${log.user_id}` : '历史日志未记录账号'}
+              {log.pregift_id ? ` · 预赠 #${log.pregift_id}` : ''}
             </div>
           </div>
         </Space>
@@ -309,15 +454,18 @@ export default function GiftManagePage() {
       <AdminPageHeader
         eyebrow="GIFTS"
         title="赠课管理"
-        description="按手机号向已绑定用户发放整门课程。赠课只依赖手机号匹配；同一手机号 + 课程重复提交为幂等请求，不重复发放、不新增日志。"
+        description="两种赠送方式：按学员检索后选中 user_id 赠送（常规赠课），或直接输入手机号赠送（未注册手机号先进入预赠，首次授权该手机号登录时自动到账）。同一手机号 / 用户 + 课程均不重复发放。"
         extra={
           <>
+            <Link to="/user-course">
+              <Button icon={<UserOutlined />}>按学员赠送</Button>
+            </Link>
             <Button
               type="primary"
               icon={<GiftOutlined />}
               onClick={openGiftModal}
             >
-              赠送课程
+              手机号赠送 / 预赠
             </Button>
             <Button
               icon={<ReloadOutlined />}
@@ -334,7 +482,7 @@ export default function GiftManagePage() {
         type="info"
         showIcon
         className="mb-4"
-        message="后台赠课不会短信通知用户；用户下次进入小程序即可看到课程。赠课日志只记录手机号、课程、操作管理员与时间，接口不返回昵称、头像、天数与到期日。"
+        message="后台赠课不会短信通知用户。已注册手机号直接到账；未注册手机号进入预赠，用户首次用该手机号微信登录并授权后自动认领，课程、预约次数同时到账。历史赠课记录保持不变。"
       />
 
       <Card className="mb-4">
@@ -504,9 +652,64 @@ export default function GiftManagePage() {
         />
       </Card>
 
+      <Card
+        style={{ marginTop: 16 }}
+        styles={{ body: { padding: 0 } }}
+        title={
+          <Space size={8} wrap>
+            <Typography.Text strong>手机号预赠记录</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              共 {pregiftTotal} 条 · 待认领优先展示
+            </Typography.Text>
+          </Space>
+        }
+        extra={
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={pregiftLoading}
+            onClick={() => loadPregifts(pregiftPage, pregiftPageSize)}
+          >
+            刷新
+          </Button>
+        }
+      >
+        {pregiftError ? (
+          <Alert
+            type="error"
+            showIcon
+            className="m-4"
+            message="预赠记录加载失败"
+            description={pregiftError}
+          />
+        ) : null}
+        <Table<AdminPregift>
+          rowKey="id"
+          columns={pregiftColumns}
+          dataSource={pregifts}
+          loading={pregiftLoading}
+          scroll={{ x: 1000 }}
+          pagination={{
+            current: pregiftPage,
+            pageSize: pregiftPageSize,
+            total: pregiftTotal,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50'],
+            showTotal: (count) => `共 ${count} 条`,
+            onChange: (nextPage, nextPageSize) =>
+              loadPregifts(nextPage, nextPageSize)
+          }}
+          locale={{
+            emptyText: pregiftLoading
+              ? '正在查询预赠记录…'
+              : '暂无手机号预赠记录'
+          }}
+        />
+      </Card>
+
       <Modal
         open={giftOpen}
-        title="赠送课程"
+        title="手机号赠送 / 预赠"
         width={580}
         okText="确认赠课"
         cancelText="取消"
@@ -523,8 +726,8 @@ export default function GiftManagePage() {
           type="info"
           showIcon
           className="mb-4"
-          message="幂等规则"
-          description="同一手机号 + 同一课程只保留一条授权。若用户已拥有该课程，本次提交不会重复发放，也不会新增日志；只有真实新增授权时才写入赠课日志。"
+          message="到账规则"
+          description="已注册手机号直接发放到该学员账号；未注册手机号先写入预赠，用户首次用该手机号微信登录并授权后自动认领。同一手机号 + 课程不重复发放；预赠阶段不归属任何账号，课程与预约次数在认领时按最终 user_id 到账。"
         />
 
         {grantError ? (
@@ -562,7 +765,7 @@ export default function GiftManagePage() {
                     : Promise.reject(new Error('请输入 11 位中国大陆手机号'))
               }
             ]}
-            extra="仅匹配已通过微信授权绑定手机号的用户；未绑定用户无法被赠课。"
+            extra="已注册手机号直接到账；未注册手机号进入预赠，无需学员先注册或先登录。"
           >
             <Input
               inputMode="numeric"
@@ -576,7 +779,7 @@ export default function GiftManagePage() {
             name="courseId"
             label="赠送课程"
             rules={[{ required: true, message: '请选择要赠送的课程' }]}
-            extra="课程 ID 与手机号共同构成幂等键。"
+            extra="手机号 + 课程构成幂等键；预赠阶段只绑定手机号。"
           >
             <AdminCourseSelect disabled={granting} />
           </Form.Item>

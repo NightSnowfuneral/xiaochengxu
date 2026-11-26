@@ -12,13 +12,14 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin, MYSQL_TABLE_OPTIONS
-from .enums import OrderStatus, enum_column
+from .enums import OrderSource, OrderStatus, enum_column
 
 if TYPE_CHECKING:
     from .course import Course
@@ -38,6 +39,10 @@ class Order(TimestampMixin, Base):
     __tablename__ = "orders"
     __table_args__ = (
         CheckConstraint("amount >= 0", name="amount_non_negative"),
+        CheckConstraint(
+            "pay_env IS NULL OR pay_env IN (0, 1)",
+            name="order_pay_env",
+        ),
         Index("ix_orders_user_id", "user_id"),
         Index("ix_orders_course_id", "course_id"),
         Index("ix_orders_status_created_at", "status", "created_at"),
@@ -76,10 +81,33 @@ class Order(TimestampMixin, Base):
         default=OrderStatus.PENDING,
         server_default=text("'pending'"),
     )
+    source: Mapped[OrderSource] = mapped_column(
+        enum_column(OrderSource, name="order_source"),
+        nullable=False,
+        default=OrderSource.WECHAT_PAY,
+        server_default=text("'wechat_pay'"),
+        comment="订单来源：wechat_pay / wx_vpay",
+    )
     openid: Mapped[str | None] = mapped_column(
         String(128, collation="utf8mb4_bin"),
         nullable=True,
         comment="下单时使用的付款人 openid，用于核对回调付款人",
+    )
+    product_id: Mapped[str | None] = mapped_column(
+        String(64, collation="utf8mb4_bin"),
+        nullable=True,
+        comment="虚拟支付商品 ID；普通微信支付订单为 NULL",
+    )
+    mch_order_no: Mapped[str | None] = mapped_column(
+        String(64, collation="utf8mb4_bin"),
+        nullable=True,
+        unique=True,
+        comment="微信虚拟支付商户订单号；优先作为发货幂等键",
+    )
+    pay_env: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="虚拟支付环境：0=正式，1=沙箱；普通支付为 NULL",
     )
     pay_transaction_id: Mapped[str | None] = mapped_column(
         String(64, collation="utf8mb4_bin"),

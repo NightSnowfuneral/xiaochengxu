@@ -16,6 +16,8 @@ import {
 import type { MenuProps } from 'antd'
 import {
   BookOutlined,
+  CalendarOutlined,
+  CloudServerOutlined,
   FileTextOutlined,
   GiftOutlined,
   LogoutOutlined,
@@ -53,8 +55,14 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
       { key: '/courses', label: '课程管理', icon: <BookOutlined /> },
       { key: '/lessons', label: '课时管理', icon: <PlaySquareOutlined /> },
       { key: '/media', label: '媒资管理', icon: <VideoCameraOutlined /> },
+      {
+        key: '/media/vod-library',
+        label: 'VOD视频库',
+        icon: <CloudServerOutlined />
+      },
       { key: '/gifts', label: '赠课管理', icon: <GiftOutlined /> },
-      { key: '/user-course', label: '用户课程管理', icon: <TeamOutlined /> }
+      { key: '/user-course', label: '用户课程管理', icon: <TeamOutlined /> },
+      { key: '/appointments', label: '指导预约', icon: <CalendarOutlined /> }
     ]
   },
   {
@@ -71,9 +79,11 @@ const ROUTE_LABELS: Record<string, string> = {
   '/courses': '课程管理',
   '/lessons': '课时管理',
   '/media': '媒资管理',
+  '/media/vod-library': 'VOD视频库',
   '/gifts': '赠课管理',
   '/user-course': '用户课程管理',
   '/user-courses': '用户课程（兼容只读）',
+  '/appointments': '指导预约',
   '/orders': '订单查询',
   '/config': '系统配置'
 }

@@ -136,6 +136,7 @@ npm run build:weapp:online
 3. 管理后台直接访问 `https://api.qinghebacademy.cn/admin/`。
 4. 在 COS 控制台把 `https://api.qinghebacademy.cn` 加入桶 CORS 的 Origin，否则后台直传课程图片会被浏览器拦截。
 5. 小程序正式发布前必须完成 ICP 备案，并在公众平台把 `https://api.qinghebacademy.cn` 配置为 request 合法域名。
+6. 交易类小程序提交审核时，「小程序订单中心path」填 `pages/orders/index`（主路径，不拼参数）；该页对应个人中心「我的订单」。
 
 > 当前 `.env` 中的微信支付是本地 mock 配置（测试商户号 + 本地私钥），部署后登录、课程、播放、后台功能可用，但**不能完成真实支付**。正式收款前替换 `WECHAT_PAY_MCH_ID`、`WECHAT_PAY_CERT_SERIAL_NO`、`WECHAT_PAY_API_V3_KEY` 与 `deploy/secrets/wechatpay_apiclient_key.pem`，再执行一次 `bash deploy/remote-deploy.sh`。
 
@@ -180,6 +181,30 @@ bash deploy/daily-deploy.sh
 - 日常发布不动服务器 `/opt/huahuo-spark/.env`（线上可能手工改过）；若该文件不存在，脚本会在清理旧代码前直接报错退出，需先做一次全量发布。
 - 修改了本地 `.env`（微信/COS/VOD/支付密钥等）时使用：`REFRESH_ENV=1 bash deploy/daily-deploy.sh`。
 - 新增数据库迁移后直接日常发布即可；迁移失败不会自动回退 DDL，需要人工核对。
+- 本次发布包含 `0011_phone_account_binding`（微信一键登录 / 手机号主账号）与 `0012_course_pregifts`（手机号预赠）。首次升级前，先在服务器执行只读预检与备份：
+
+  ```bash
+  cd /opt/huahuo-spark
+
+  # 当前迁移版本
+  sudo docker compose --env-file .env -f deploy/docker-compose.prod.yml \
+    exec -T fastapi alembic current
+
+  # 重复手机号检查：有输出则先人工合并，否则迁移会中止。
+  # 尚未应用 0011 时列名是 mobile；已应用后改为 phone。
+  sudo docker compose --env-file .env -f deploy/docker-compose.prod.yml \
+    exec -T mysql sh -lc \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -N -e \
+     "SELECT mobile, COUNT(*) FROM users WHERE mobile IS NOT NULL GROUP BY mobile HAVING COUNT(*) > 1;"'
+
+  # 备份（不打印任何密钥）
+  sudo docker compose --env-file .env -f deploy/docker-compose.prod.yml \
+    exec -T mysql sh -lc \
+    'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction "$MYSQL_DATABASE"' \
+    | gzip > ~/huahuo-spark-$(date +%F-%H%M).sql.gz
+  ```
+
+  预检与备份通过后再执行日常发布。`0011` 会重命名 `mobile → phone`、建立唯一索引、新建 `user_bind_openid` / `user_merge_log` 并把历史 `openid` 迁入绑定表；`0012` 再创建 `course_pregifts` / `gift_claim_logs` 并为 `gift_logs` 补充 `user_id` / `pregift_id`，不修改历史赠课记录。
 - 小程序代码不受影响，仍需 `cd miniprogram && npm run build:weapp:online` 后在微信开发者工具上传。
 - 发布后验证：
 
@@ -362,6 +387,10 @@ openssl rand -hex 16   # 管理员初始密码（至少 12 位，≤72 字节）
 | 微信支付 | `WECHAT_PAY_PUBLIC_KEY_ID` | 微信支付公钥 ID（`PUB_KEY_ID_...`） |
 | 微信支付 | `WECHAT_PAY_NOTIFY_URL` | 必须为 HTTPS 公网 URL |
 | 支付 | `COURSE_VALID_DAY` | 支付成功后课程授权有效天数，默认 365 |
+| 订单 | `ORDER_CLOSE_TIMEOUT_MINUTES` | 待支付订单超时自动关闭的分钟数，默认 30 |
+| 订单 | `ORDER_CLOSE_SCAN_INTERVAL_SECONDS` | 超时关单扫描周期（秒），默认 300 |
+| 订单 | `ORDER_RECONCILE_INTERVAL_SECONDS` | 每日对账周期（秒），默认 86400 |
+| 订单 | `ORDER_RECONCILE_LOOKBACK_DAYS` | 对账回看天数，默认 7，允许 1–90 |
 | COS | `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` | 建议使用最小权限子账号 |
 | COS | `COS_BUCKET` / `COS_REGION` | 存储桶与地域 |
 | COS | `COS_PUBLIC_BASE_URL` | 图片公网/CDN 基础地址，不带结尾斜杠 |
@@ -423,7 +452,8 @@ npm run build:weapp:online   # 内置 https://api.qinghebacademy.cn/api/v1
 在微信公众平台「开发管理 → 开发设置 → 服务器域名」配置：
 
 - `request` 合法域名：`https://api.qinghebacademy.cn`
-- 不需要配置 `uploadFile` / `downloadFile` 域名：课程图片由浏览器后台直传 COS，视频由原生 video 组件加载服务端签发的 VOD 播放地址。
+- `uploadFile` 合法域名：`https://api.qinghebacademy.cn`（个人中心头像经 `Taro.uploadFile` 上传到 `/client/user/avatar`）
+- 不需要配置 `downloadFile` 域名：课程图片由浏览器后台直传 COS，视频由原生 video 组件加载服务端签发的 VOD 播放地址；COS 图片通过 `<Image>` 展示，不走 `wx.downloadFile`。
 - 域名必须 HTTPS、已备案、证书有效，不能是 IP 或带端口。
 
 ### 5.3 手机号授权与隐私
@@ -431,7 +461,13 @@ npm run build:weapp:online   # 内置 https://api.qinghebacademy.cn/api/v1
 - 在公众平台开通「手机号快速验证」能力，按平台当前规则完成认证、类目与权限申请。
 - 在「用户隐私保护指引」中声明收集手机号用于账号绑定与课程权益发放。
 - 后端只接收 `getPhoneNumber` 的动态 code，调用微信接口换取手机号；前端不上传明文手机号。
-- 未绑定手机号的用户可以正常购买，但**无法收到后台赠课**，因为赠课唯一依赖 `mobile` 匹配。
+- 登录只保留「微信一键登录」：一次点击同时完成 openid 登录与手机号授权，不再提供短信验证码或单独的绑定手机号入口。
+- 手机号是账号唯一信任基准：不同微信使用同一手机号会自动合并到同一账号，课程、订单、预约次数按 `user_id` 全部继承；跨手机号冲突返回 `ACCOUNT_CONFLICT`，不自动合并两个已有账号。
+- 赠课只按手机号匹配：已注册手机号直接发放到对应 `user_id`；未注册手机号写入手机号预赠（`course_pregifts`），不创建账号、不归属任何用户。
+- 用户首次用该手机号微信授权登录时，后端在同一事务内自动认领全部待认领预赠，课程与预约次数立即到账；认领后永久归属该用户，后续逻辑与普通赠课一致。
+- 迁移 `0011_phone_account_binding` 会先检查 `users.phone` 重复值，发现重复会中止升级；执行前先备份数据库并确认无重复手机号（见 0.7 节）。
+- 迁移 `0012_course_pregifts` 新增 `course_pregifts`、`gift_claim_logs`，并为 `gift_logs` 增加 `user_id` / `pregift_id`；属于纯增量 DDL，不修改历史赠课数据。
+- 迁移 `0014_order_operation_logs` 新增订单取消 / 超时关单 / 对账日志表，纯增量 DDL，不修改历史订单数据；上线后定时任务会自动接管超时关单与每日对账。
 
 ### 5.4 视频播放域名
 
@@ -459,7 +495,8 @@ npm run build:weapp:online   # 内置 https://api.qinghebacademy.cn/api/v1
 - Nginx 必须原样转发请求体，不能改写或截断；`/api/` 反代已满足。
 - 回调成功返回 HTTP 200 + `{"code":"SUCCESS","message":"成功"}`；失败返回非 2xx，微信会重试。
 - 幂等由服务端完成：订单行锁 + 已支付判断 + 课程授权唯一约束；重复回调不会重复发课。
-- 只存在 `pending` / `paid` 两种状态，不提供退款接口；后台订单只读。
+- C 端订单状态只有待支付 / 已支付 / 已取消（`pending` / `paid` / `closed`）三种；后台订单只读，不提供退款接口。
+- 待支付订单可由用户主动取消，或由后端定时任务在超时后自动关闭；取消前必须先向微信查单，微信已支付则转正常发课，不会退款、不会回收权益。
 
 ### 6.3 支付验收
 
@@ -663,9 +700,10 @@ openssl s_client -connect api.qinghebacademy.cn:443 -servername api.qinghebacade
 
 1. 后台登录，创建课程并上传三张图片，确认图片公网可访问。
 2. 添加课时（VOD FileId），确认后台没有播放按钮。
-3. 小程序登录、绑定手机号、购买、播放、进度续播。
+3. 小程序点击「微信一键登录」并授权手机号，完成购买、播放、进度续播；用第二个微信授权同一手机号，确认落到同一账号且课程 / 订单继承。
 4. 后台赠课同一手机号 + 课程两次，确认第二次 `gifted=false` 且日志只有一条。
-5. 订单页只读，确认没有下单/改状态入口。
+5. 用一个未注册手机号创建预赠，确认后台预赠列表为「待认领」且不产生课程授权；用该手机号首次微信登录后确认课程到账、预赠变为「已认领」，再次登录不重复发放。
+6. 订单页只读，确认没有下单/改状态入口。
 
 ## 11. 上线验收清单
 
@@ -682,8 +720,14 @@ openssl s_client -connect api.qinghebacademy.cn:443 -servername api.qinghebacade
 
 - [ ] 正式 AppID 已替换，开发者工具上传成功。
 - [ ] request 合法域名配置为生产 HTTPS 域名。
-- [ ] 微信静默登录成功；手机号绑定成功；重复绑定同号不报错。
-- [ ] 未绑定手机号用户可购买，但后台赠课返回未绑定提示。
+- [ ] 无独立登录页；冷启动未登录时首页与课程广场公开渲染，不弹窗、不跳转。
+- [ ] 点击受控入口（我的预约 / 全部课程 / 我的课程 / 个人中心）弹出半屏「微信一键登录」；点击一次同时完成 openid 登录与手机号授权；无短信验证码、无单独绑定入口。
+- [ ] 拒绝手机号授权时提示「需授权手机号才能完成登录」并保留弹窗、停留当前页，不创建账号。
+- [ ] 关闭弹窗中止原操作并停留当前页；登录成功后自动进入原目标页。
+- [ ] 第二个微信授权同一手机号后落到同一账号，课程、订单、预约次数继承，`isMerged=true`。
+- [ ] 跨手机号冲突返回 `ACCOUNT_CONFLICT`，两个账号不串数据。
+- [ ] 主动退出后 `switchTab` 回首页且正常渲染；再冷启动仍为未登录；`/auth/token-check` 对失效 Token 返回 HTTP 200 `valid=false`，前端清理后停留当前页。
+- [ ] 生产构建不包含模拟登录入口或测试凭据。
 - [ ] 隐私指引声明了手机号用途。
 
 ### 支付
@@ -710,9 +754,12 @@ openssl s_client -connect api.qinghebacademy.cn:443 -servername api.qinghebacade
 
 ### 赠课与配置
 
-- [ ] 赠课只按手机号匹配，未绑定用户无法被赠课。
+- [ ] 赠课只按手机号匹配且不支持 openid；同一手机号多微信已合并到同一账号。
+- [ ] 已注册手机号赠课直接到账（`mode=direct` / `status=delivered`）；未注册手机号创建预赠（`mode=pre_gift` / `status=pending`），不创建账号或课程授权。
+- [ ] 未注册手机号首次授权登录后，预赠自动认领并出现在我的课程；预约次数按快照到账；多条预赠一次认领；再次登录不重复认领。
+- [ ] 预赠认领后永久归属，后台再次提交返回 `status=claimed`，不新增授权。
 - [ ] 同一手机号 + 课程重复赠课返回 `gifted=false`，不新增日志。
-- [ ] 赠课日志记录管理员、手机号、课程、时间，筛选正常。
+- [ ] 赠课日志记录管理员、手机号、用户 ID、预赠 ID、课程、时间，筛选正常；后台预赠列表可看待认领 / 已认领、认领用户与来源 IP。
 - [ ] 后台只能修改配置值，不能增删配置键。
 - [ ] 底部固定两个 Tab，只更新两段文字。
 - [ ] 配置保存后小程序 onShow 能拉到新文案，接口异常时有本地默认值兜底。

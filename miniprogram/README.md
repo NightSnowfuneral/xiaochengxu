@@ -52,7 +52,11 @@ TARO_APP_API_BASE_URL=https://api.example.com/api/v1
 | 课程列表 | `pages/course-list/index` | 搜索、全部 / 热门 / 我的课程 |
 | 课程详情 | `pages/course-detail/index` | 全量课时、购买、权限解锁 |
 | 视频播放 | `pages/player/index` | VOD 播放、倍速/全屏、loading、15 秒进度上报、看完标记、续播 |
-| 个人中心 | `pages/profile/index` | 手机号绑定、我的课程、退出登录 |
+| 支付结果 | `pages/payment-success/index` | 轮询确认支付结果、刷新课程 |
+| 我的订单 | `pages/orders/index` | 订单中心：全部 / 待支付 / 已支付 / 已取消筛选，继续支付、取消订单 |
+| 订单详情 | `pages/order-detail/index` | 订单号、课程、金额、状态；待支付可支付或取消 |
+| 个人中心 | `pages/profile/index` | 个人资料、我的订单入口、我的课程、退出登录 |
+| 我的预约 | `pages/appointment/index` | 预约次数、可预约时段、预约记录 |
 
 底部 TabBar 固定两项：首页、课程广场；只动态更新两项文字，不新增 Tab。
 
@@ -64,38 +68,41 @@ TARO_APP_API_BASE_URL=https://api.example.com/api/v1
 ```text
 src/
 ├─ app.config.ts              # 页面、双 Tab、腾讯云 VOD 插件
-├─ app.tsx                    # Provider、启动静默登录、拉取配置
+├─ app.tsx                    # Provider、启动/热启动登录态校验、拉取配置
 ├─ components/                # CourseIconGrid / HotTopicCard / CourseCard
-│                             # LoginModal / PurchaseModal / VodPlayer / MockModeBadge
-├─ hooks/                     # useAuthGuard、useSystemConfig
-├─ pages/                     # 6 个页面
-├─ services/                  # axios + Taro.request 适配、四组业务 API
+│                             # WxAuthSheet / PurchaseModal / VodPlayer / MockModeBadge
+├─ hooks/                     # useRequireAuth、useSystemConfig
+├─ pages/                     # 10 个页面（含我的订单、订单详情）
+├─ services/                  # axios + Taro.request 适配、业务 API
 ├─ store/                     # RTK slices、redux-persist 适配
-├─ utils/                     # 登录、导航、Tab、格式化、配置键兼容
+├─ utils/                     # 登录、惰性鉴权 authGate、导航、格式化
 ├─ dev/                       # 仅开发环境的模拟登录及生产替身
 └─ types/                     # 后端 DTO 与自定义组件类型
 ```
 
-Redux slices：`userSlice`、`configSlice`、`courseSlice`、`orderSlice`。
-仅 `user` 与 `config` 持久化；课程和订单始终从服务端读取。
+Redux slices：`userSlice`、`authSheetSlice`、`configSlice`、`courseSlice`、`orderSlice`。
+仅 `user` 与 `config` 持久化；登录弹窗、课程和订单始终从内存或服务端读取。
 
 ## 4. 登录与页面守卫
 
-1. 启动时等待 redux-persist 恢复完成，再执行 `wx.login` → 后端
-   `/client/auth/wx-login`，由后端换取 openid 并签发 **C 端 JWT**。
-2. 前端不接触 openid、session_key；手机号只通过
-   `open-type="getPhoneNumber"` 的临时 code 交给后端换取。
-3. 课程广场、课程列表、课程详情、播放页在 `onShow` 校验登录；未登录弹出
-   统一 `LoginModal`，登录成功后不需要刷新页面即可解锁内容。
-4. 401 会清理真实会话并提示重新登录；模拟会话的 401 属于预期，不会清除
-   模拟登录状态（只提示一次）。
-5. 主动退出会清除 Token、模拟状态、课程缓存，并且**本次运行期间不再自动登录**。
+1. 无独立登录页。首页与课程广场公开浏览；冷启动无 Token 时不跳转、不弹窗。
+2. 需要身份的操作（我的预约、全部课程、我的课程、个人中心、购买、播放等）
+   通过 `useRequireAuth` / `requestAuth` 暂存原动作，并打开底部半屏
+   `WxAuthSheet`。登录成功后自动继续原跳转；关闭弹窗则中止并停留当前页。
+3. 一次性按钮完成「手机号快捷登录」：内部通过 `Taro.login()` 取 `loginCode`，
+   `open-type="getPhoneNumber"` 取 `phoneCode`，交由后端
+   `/auth/wx-login` 换取 openid 与 **C 端 JWT**。前端不接触 openid、session_key，
+   手机号只以临时 code 形式交给后端。
+4. 冷/热启动仅在本地已有 Token 时调用 `/auth/token-check`；`onShow` 2 秒防抖
+   并复用进行中的请求。Token 失效或任意业务接口 401 只清理本地登录态与持久化
+   缓存，停留当前页，不跳转登录页、不自动拉起手机号授权。
+5. 主动退出完成后切回首页 Tab；首页以未登录状态正常渲染，重启仍保持未登录。
 
 ### 开发环境模拟登录
 
 - 只有 `npm run dev:weapp`（development）才有入口。
-- `wx.login` 失败时自动降级到模拟用户；也可以点击登录弹窗中的
-  **“🔧 模拟登录（开发测试）”**。
+- 点击底部登录弹窗中的 **“模拟登录（仅开发环境）”** 使用固定测试账号；
+  生产构建会替换为空实现，入口与凭据都不会打进包内。
 - 模拟用户固定为：
 
 ```ts
@@ -116,10 +123,10 @@ Redux slices：`userSlice`、`configSlice`、`courseSlice`、`orderSlice`。
 
 ## 5. 支付流程
 
-1. 课程详情页创建订单：`POST /client/orders`（只传 `course_id`，金额由服务端固化）。
+1. 课程详情页创建订单：`POST /payments/create-order`（只传 `course_id`，金额由服务端固化）。
 2. 后端返回微信支付参数；前端将 snake_case 映射为 `wx.requestPayment` 的
    `timeStamp / nonceStr / package / signType / paySign`。
-3. 支付调起成功后每 **2 秒**轮询 `/client/orders/{order_no}`，直到 `paid`
+3. 支付调起成功后每 **2 秒**轮询 `/payments/query-order/{order_no}`，直到 `paid`
    （最多约 2 分钟），随后刷新课程详情与“我的课程”，课时的 `is_owned`
    以服务端返回为准。
 4. 支付取消可重新发起；轮询超时提示稍后在“我的课程”确认。
@@ -177,10 +184,6 @@ Redux slices：`userSlice`、`configSlice`、`courseSlice`、`orderSlice`。
 | `search_placeholder` | `search_placeholder` | 搜索占位 |
 | `tab_home_text` | `tab_home_text` | 第一个 Tab 文字 |
 | `tab_course_text` | `tab_course_text` | 第二个 Tab 文字 |
-| `login_modal_title` | `login_modal_title` | 登录弹窗标题 |
-
-`login_modal_title` 当前不在后端初始化默认键中；若后端返回该键则使用配置值，
-否则使用前端默认值“登录后继续学习”。
 
 TabBar 只在首页/课程广场调用 `Taro.setTabBarItem({ index: 0/1 })`，不修改其他
 属性，也不在非 Tab 页面调用。
@@ -189,14 +192,17 @@ TabBar 只在首页/课程广场调用 `Taro.setTabBarItem({ index: 0/1 })`，�
 
 - `services/request.ts` 用 `Taro.request` 实现 axios adapter（小程序没有 XHR），
   继续使用 axios 的拦截器、参数序列化与错误归一化。
-- 请求自动注入 `Authorization: Bearer <C端JWT>`；登录接口除外。
+- 请求自动注入 `Authorization: Bearer <C端JWT>`；登录接口与公开只读接口除外。
+- 公开课程列表通过 `skipAuth` 不携带本地 Token，避免过期 Token 把公开请求变成 401。
 - 后端错误统一为 `{ code, message, data }`，前端转换为 `ApiError`。
 - 服务端路由：
-  - `/client/auth/wx-login`、`/client/auth/bind-mobile`
+  - `/auth/wx-login`、`/auth/token-check`、`/auth/logout`
   - `/client/user/profile`
   - `/client/courses`、`/client/courses/mine`、`/client/courses/{id}`
   - `/client/lessons/{id}/play-auth`、`/client/study/progress`
-  - `/client/orders`、`/client/orders/{order_no}`
+  - `/client/orders`（我的订单列表，可按状态筛选）、`/client/orders/{order_no}`（详情）、
+    `/client/orders/{order_no}/pay`（继续支付）、
+    `/client/orders/{order_no}/cancel`（取消待支付订单）
   - `/config`
 
 ## 9. 安全与边界

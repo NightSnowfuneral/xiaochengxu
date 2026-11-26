@@ -1,7 +1,8 @@
-"""B 端赠课与赠课日志路由（全部要求 Admin JWT）。
+"""B 端赠课、手机号预赠与日志路由（全部要求 Admin JWT）。
 
-赠课入参只有手机号与课程 ID；手机号匹配、未绑定拦截、重复赠课幂等
-与日志留痕都由 `gift_service` 完成。后台不下单、不播放视频。
+赠课入参只有手机号与课程 ID：已注册手机号直接发放到 user_id；未注册
+手机号进入预赠，用户首次授权该手机号登录时自动认领。后台不下单、
+不播放视频。
 """
 
 from __future__ import annotations
@@ -11,13 +12,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from ....schemas import (
+    AdminPregiftItem,
+    AdminPregiftQuery,
     GiftGrantRequest,
     GiftGrantResponse,
     GiftLogQuery,
     GiftLogResponse,
     PageResponse,
 )
-from ....services import gift_service
+from ....services import gift_service, pregift_service
 from ...deps import AdminDep, DbSession, admin_dep
 
 router = APIRouter(
@@ -42,6 +45,18 @@ async def grant_course(
         admin_id=admin.admin_id,
         payload=payload,
     )
+
+
+@router.get(
+    "/pregifts",
+    response_model=PageResponse[AdminPregiftItem],
+    summary="查询手机号预赠记录",
+)
+async def list_pregifts(
+    session: DbSession,
+    query: Annotated[AdminPregiftQuery, Depends()],
+) -> PageResponse[AdminPregiftItem]:
+    return await pregift_service.list_pregifts(session, query)
 
 
 @router.get(

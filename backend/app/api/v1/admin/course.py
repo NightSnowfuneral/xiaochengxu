@@ -11,18 +11,26 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 
 from ....schemas import (
+    AdminCourseListQuery,
+    AdminCourseResponse,
     CourseCreateRequest,
-    CourseListQuery,
-    CourseResponse,
+    CourseStatusChangeRequest,
     CourseUpdateRequest,
     MessageResponse,
     PageResponse,
 )
 from ....services import cos_service, course_service
-from ...deps import DbSession, admin_dep
+from ...deps import AdminDep, DbSession, admin_dep
 
 router = APIRouter(
     prefix="/admin/courses",
+    tags=["admin-course"],
+    dependencies=[Depends(admin_dep)],
+)
+
+# 需求指定的单数路径：/admin/course/{id}/change-status
+alias_router = APIRouter(
+    prefix="/admin/course",
     tags=["admin-course"],
     dependencies=[Depends(admin_dep)],
 )
@@ -46,54 +54,73 @@ async def create_image_presign(
 
 @router.get(
     "",
-    response_model=PageResponse[CourseResponse],
+    response_model=PageResponse[AdminCourseResponse],
     summary="后台课程列表",
 )
 async def list_courses(
     session: DbSession,
-    query: Annotated[CourseListQuery, Depends()],
-) -> PageResponse[CourseResponse]:
+    query: Annotated[AdminCourseListQuery, Depends()],
+) -> PageResponse[AdminCourseResponse]:
     return await course_service.list_courses_for_admin(session, query)
 
 
 @router.post(
     "",
-    response_model=CourseResponse,
+    response_model=AdminCourseResponse,
     summary="新建课程",
 )
 async def create_course(
     payload: CourseCreateRequest,
     session: DbSession,
-) -> CourseResponse:
+) -> AdminCourseResponse:
     return await course_service.create_course(session, payload)
 
 
 @router.get(
     "/{course_id}",
-    response_model=CourseResponse,
+    response_model=AdminCourseResponse,
     summary="课程详情",
 )
 async def get_course(
     course_id: Annotated[int, Path(gt=0)],
     session: DbSession,
-) -> CourseResponse:
+) -> AdminCourseResponse:
     return await course_service.get_course_response(session, course_id)
 
 
 @router.put(
     "/{course_id}",
-    response_model=CourseResponse,
+    response_model=AdminCourseResponse,
     summary="更新课程",
 )
 async def update_course(
     course_id: Annotated[int, Path(gt=0)],
     payload: CourseUpdateRequest,
     session: DbSession,
-) -> CourseResponse:
+) -> AdminCourseResponse:
     return await course_service.update_course(
         session,
         course_id,
         payload,
+    )
+
+
+@alias_router.put(
+    "/{course_id}/change-status",
+    response_model=AdminCourseResponse,
+    summary="上下架课程（需 Admin 鉴权）",
+)
+async def change_course_status(
+    course_id: Annotated[int, Path(gt=0)],
+    payload: CourseStatusChangeRequest,
+    session: DbSession,
+    admin: AdminDep,
+) -> AdminCourseResponse:
+    return await course_service.change_course_status(
+        session,
+        course_id,
+        status=payload.status,
+        admin_id=admin.admin_id,
     )
 
 
@@ -110,4 +137,4 @@ async def delete_course(
     return MessageResponse(message="课程已删除")
 
 
-__all__ = ["router"]
+__all__ = ["alias_router", "router"]

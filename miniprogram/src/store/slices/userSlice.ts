@@ -2,27 +2,19 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
 import type { AuthUser } from '../../types'
 
-export type LoginStatus = 'idle' | 'loading' | 'success' | 'error'
-
 export interface UserState {
   profile: AuthUser | null
   token: string | null
   isMockLogin: boolean
-  initialized: boolean
-  loginStatus: LoginStatus
-  error: string | null
 }
 
 const initialState: UserState = {
   profile: null,
   token: null,
-  isMockLogin: false,
-  initialized: false,
-  loginStatus: 'idle',
-  error: null
+  isMockLogin: false
 }
 
-interface SetCredentialsPayload {
+interface SetAuthPayload {
   profile: AuthUser
   token: string
   isMockLogin: boolean
@@ -32,13 +24,10 @@ const userSlice = createSlice({
   name: 'user',
   initialState,
   reducers: {
-    setCredentials(state, action: PayloadAction<SetCredentialsPayload>) {
+    setAuth(state, action: PayloadAction<SetAuthPayload>) {
       state.profile = action.payload.profile
       state.token = action.payload.token
       state.isMockLogin = action.payload.isMockLogin
-      state.loginStatus = 'success'
-      state.error = null
-      state.initialized = true
     },
     updateProfile(
       state,
@@ -54,40 +43,19 @@ const userSlice = createSlice({
         ...action.payload
       }
     },
-    setInitialized(state, action: PayloadAction<boolean>) {
-      state.initialized = action.payload
-    },
-    setLoginStatus(state, action: PayloadAction<LoginStatus>) {
-      state.loginStatus = action.payload
-      if (action.payload !== 'error') {
-        state.error = null
-      }
-    },
-    setLoginError(state, action: PayloadAction<string>) {
-      state.loginStatus = 'error'
-      state.error = action.payload
-    },
-    clearUser(state) {
+    /**
+     * 清空认证状态（退出登录、Token 失效时调用）。
+     * 仅重置内存状态；本机持久化缓存由 logout 流程中的
+     * persistor.purge() 与 Storage 清理负责。
+     */
+    clearAuth(state) {
       state.profile = null
       state.token = null
       state.isMockLogin = false
-      state.initialized = true
-      state.loginStatus = 'idle'
-      state.error = null
     }
   }
 })
 
-export const {
-  clearUser,
-  setCredentials,
-  setInitialized,
-  setLoginError,
-  setLoginStatus,
-  updateProfile
-} = userSlice.actions
-
-export const selectUserState = (state: { user: UserState }): UserState =>
-  state.user
+export const { clearAuth, setAuth, updateProfile } = userSlice.actions
 
 export default userSlice.reducer

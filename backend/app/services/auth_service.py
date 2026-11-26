@@ -1,387 +1,419 @@
-"""认证服务：C 端微信静默登录 / 手机号绑定 + B 端管理员登录。
+"""认证服务：C 端微信一键登录 / 手机号账号合并 + B 端管理员登录。
+
+C 端登录规则：
+
+- 登录同时完成 openid 获取与手机号授权，手机号是账号的唯一信任基准；
+- 【分支A】openid 已绑定：直接使用该主账号，手机号变化则同步更新；
+- 【分支B-1】openid 未绑定、手机号已存在：把新 openid 并入老账号；
+- 【分支B-2】两者都不存在：新建主账号并绑定 openid；
+- 同一手机号的并发登录由 Redis 分布式锁 + 数据库唯一索引双重保护。
 
 安全约束：
-- C 端只支持 wx.login 静默登录（code2Session），不提供手机号 + 验证码或
-  密码登录；
-- 手机号只能通过 `getPhoneNumber` 动态令牌由后端向微信换取，前端不得
-  直接上传明文手机号；
-- 管理员与 C 端用户使用两套独立 JWT 密钥，本层分别调用 security 中
-  独立的签发函数；
-- session_key、AppSecret、access_token 不写日志、不返回前端。
+- AppSecret、session_key、access_token、业务 Token 均不写日志、不返回
+  前端（Token 只在登录 / 校验响应中按契约返回给当前客户端）；
+- 手机号只能通过微信 `getPhoneNumber` 动态令牌由后端换取；
+- 管理员与 C 端用户使用两套独立 JWT 密钥。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import re
-import time
+from dataclasses import dataclass
 
-import httpx
+from redis.asyncio import Redis
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
-from ..core.exception import (
-    AuthenticationError,
-    BusinessException,
-    InternalServerError,
-)
+from ..core.exception import AuthenticationError, BusinessException
+from ..core.login_lock import login_lock
 from ..core.security import (
     create_admin_access_token,
     create_user_access_token,
+    decode_user_access_token,
     verify_password,
 )
-from ..models import AdminUser
+from ..core.token_revocation import (
+    is_user_token_revoked,
+    revoke_user_token,
+)
+from ..models import (
+    AdminUser,
+    User,
+    UserBindOpenid,
+    UserMergeLog,
+)
+from ..models.base import utc_now_default
 from ..schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
     AdminProfileResponse,
-    MobileBindRequest,
-    UserResponse,
-    WxLoginRequest,
+    LoginUserInfo,
+    LogoutResponse,
+    TokenCheckResponse,
     WxLoginResponse,
 )
-from . import user_service
+from . import pregift_service, wechat_service
 
 logger = logging.getLogger(__name__)
 
-_CODE2SESSION_URL = "https://api.weixin.qq.com/sns/jscode2session"
-_ACCESS_TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/token"
-_PHONE_NUMBER_URL = (
-    "https://api.weixin.qq.com/wxa/business/getuserphonenumber"
-)
-
-_HTTP_TIMEOUT_SECONDS = 10.0
-_TOKEN_INVALID_ERRCODES = frozenset({40001, 40014, 42001})
-_TOKEN_EARLY_REFRESH_SECONDS = 300
-_DEFAULT_TOKEN_TTL_SECONDS = 7200
-
-_MOBILE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
-
-# 用于用户名不存在时执行一次等价的 bcrypt 校验，抹平账号枚举的时间差。
+# 用于管理员账号不存在时执行一次等价 bcrypt 校验，抹平账号枚举的时间差。
 # 该哈希对应的是一个固定占位口令，永不用于真实登录。
 _DUMMY_PASSWORD_HASH = (
     "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/HS.iK2O"
 )
 
-_access_token_cache: tuple[str, float] | None = None
-_access_token_lock = asyncio.Lock()
+_MERGE_ACTION_CREATE = "create"
+_MERGE_ACTION_MERGE = "merge"
+_MERGE_ACTION_LOGIN_UPDATE = "login_update"
 
 
-def _require_wechat_credentials() -> tuple[str, str]:
-    appid = (settings.wechat_app_id or "").strip()
-    app_secret = settings.wechat_app_secret
-    if not appid or app_secret is None:
-        raise InternalServerError("微信登录服务未配置")
-
-    secret = app_secret.get_secret_value().strip()
-    if not secret:
-        raise InternalServerError("微信登录服务未配置")
-    return appid, secret
+@dataclass(frozen=True, slots=True)
+class _LoginFlags:
+    is_new_user: bool
+    is_merged: bool
 
 
-def _errcode_of(payload: dict[str, object]) -> int:
-    value = payload.get("errcode")
-    if value is None:
-        return 0
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return -1
+def _source_ip(value: str | None) -> str | None:
+    """日志字段限长，避免异常头导致超长写入。"""
+
+    if not value:
+        return None
+    return value.strip()[:64] or None
 
 
-async def _request_json(
-    client: httpx.AsyncClient,
-    method: str,
-    url: str,
+def _masked(phone: str | None) -> str | None:
+    return wechat_service.mask_phone(phone)
+
+
+def _login_user_info(
+    user: User,
     *,
-    params: dict[str, str] | None = None,
-    json_body: dict[str, object] | None = None,
-) -> dict[str, object]:
-    try:
-        response = await client.request(
-            method,
-            url,
-            params=params,
-            json=json_body,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning(
-            "微信接口请求失败: %s",
-            exc.__class__.__name__,
-        )
-        raise BusinessException(
-            "微信服务暂不可用，请稍后重试",
-            code="WECHAT_UNAVAILABLE",
-            status_code=502,
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise BusinessException(
-            "微信服务返回异常，请稍后重试",
-            code="WECHAT_UNAVAILABLE",
-            status_code=502,
-        )
-    return payload
-
-
-def _login_error(errcode: int) -> BusinessException:
-    logger.warning("微信登录失败: errcode=%s", errcode)
-
-    if errcode in {40029, 40163}:
-        return BusinessException(
-            "微信登录凭证无效或已过期，请重新进入小程序",
-            code="WECHAT_LOGIN_FAILED",
-            status_code=400,
-        )
-    if errcode == 45011:
-        return BusinessException(
-            "登录过于频繁，请稍后重试",
-            code="WECHAT_LOGIN_TOO_FREQUENT",
-            status_code=429,
-        )
-    if errcode == 40226:
-        return BusinessException(
-            "当前微信账号存在风险，暂无法登录",
-            code="WECHAT_LOGIN_RISKY",
-            status_code=403,
-        )
-    if errcode == -1:
-        return BusinessException(
-            "微信服务繁忙，请稍后重试",
-            code="WECHAT_UNAVAILABLE",
-            status_code=502,
-        )
-    return BusinessException(
-        "微信登录失败，请稍后重试",
-        code="WECHAT_LOGIN_FAILED",
-        status_code=400,
+    openid: str | None,
+    flags: _LoginFlags,
+) -> LoginUserInfo:
+    return LoginUserInfo(
+        user_id=user.id,
+        phone_masked=user.phone_masked or _masked(user.mobile),
+        nickname=user.nickname,
+        avatar=user.avatar_url,
+        openid=openid,
+        is_new_user=flags.is_new_user,
+        is_merged=flags.is_merged,
     )
 
 
-async def _code_to_openid(code: str) -> str:
-    appid, secret = _require_wechat_credentials()
-
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        payload = await _request_json(
-            client,
-            "GET",
-            _CODE2SESSION_URL,
-            params={
-                "appid": appid,
-                "secret": secret,
-                "js_code": code,
-                "grant_type": "authorization_code",
-            },
+def _add_merge_log(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    openid: str,
+    action: str,
+    source_ip: str | None,
+) -> None:
+    session.add(
+        UserMergeLog(
+            user_id=user_id,
+            openid=openid,
+            action=action,
+            source_ip=source_ip,
         )
-
-    errcode = _errcode_of(payload)
-    if errcode:
-        raise _login_error(errcode)
-
-    openid = payload.get("openid")
-    if not isinstance(openid, str) or not openid.strip():
-        logger.warning("微信登录响应缺少 openid")
-        raise BusinessException(
-            "微信登录失败，请稍后重试",
-            code="WECHAT_LOGIN_FAILED",
-            status_code=400,
-        )
-
-    openid = openid.strip()
-    if len(openid) > 128:
-        logger.warning("微信登录响应 openid 长度异常")
-        raise BusinessException(
-            "微信登录失败，请稍后重试",
-            code="WECHAT_LOGIN_FAILED",
-            status_code=400,
-        )
-    return openid
-
-
-async def _fetch_access_token() -> tuple[str, float]:
-    appid, secret = _require_wechat_credentials()
-
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        payload = await _request_json(
-            client,
-            "GET",
-            _ACCESS_TOKEN_URL,
-            params={
-                "grant_type": "client_credential",
-                "appid": appid,
-                "secret": secret,
-            },
-        )
-
-    errcode = _errcode_of(payload)
-    token = payload.get("access_token")
-    if errcode or not isinstance(token, str) or not token.strip():
-        logger.error(
-            "获取微信 access_token 失败: errcode=%s",
-            errcode,
-        )
-        raise BusinessException(
-            "微信服务暂不可用，请稍后重试",
-            code="WECHAT_UNAVAILABLE",
-            status_code=502,
-        )
-
-    try:
-        expires_in = int(payload.get("expires_in") or _DEFAULT_TOKEN_TTL_SECONDS)
-    except (TypeError, ValueError):
-        expires_in = _DEFAULT_TOKEN_TTL_SECONDS
-
-    ttl = max(60, expires_in - _TOKEN_EARLY_REFRESH_SECONDS)
-    return token.strip(), time.monotonic() + ttl
-
-
-async def _get_access_token(*, force_refresh: bool = False) -> str:
-    """进程内缓存 access_token，提前 5 分钟刷新；并发请求串行获取。"""
-
-    global _access_token_cache
-
-    async with _access_token_lock:
-        now = time.monotonic()
-        if (
-            not force_refresh
-            and _access_token_cache is not None
-            and _access_token_cache[1] > now
-        ):
-            return _access_token_cache[0]
-
-        _access_token_cache = await _fetch_access_token()
-        return _access_token_cache[0]
-
-
-async def _request_phone_info(
-    access_token: str,
-    code: str,
-) -> dict[str, object]:
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        return await _request_json(
-            client,
-            "POST",
-            _PHONE_NUMBER_URL,
-            params={"access_token": access_token},
-            json_body={"code": code},
-        )
-
-
-def _normalize_mobile(raw: object) -> str:
-    digits = re.sub(r"\D", "", str(raw or ""))
-    if len(digits) == 13 and digits.startswith("86"):
-        digits = digits[2:]
-    return digits
-
-
-async def _fetch_mobile_by_code(code: str) -> str:
-    access_token = await _get_access_token()
-    payload = await _request_phone_info(access_token, code)
-    errcode = _errcode_of(payload)
-
-    if errcode in _TOKEN_INVALID_ERRCODES:
-        access_token = await _get_access_token(force_refresh=True)
-        payload = await _request_phone_info(access_token, code)
-        errcode = _errcode_of(payload)
-
-    if errcode == 40029:
-        raise BusinessException(
-            "手机号授权凭证无效或已过期，请重试",
-            code="WECHAT_PHONE_CODE_INVALID",
-            status_code=400,
-        )
-    if errcode == 45011:
-        raise BusinessException(
-            "操作过于频繁，请稍后重试",
-            code="WECHAT_PHONE_TOO_FREQUENT",
-            status_code=429,
-        )
-    if errcode:
-        logger.error(
-            "获取微信手机号失败: errcode=%s",
-            errcode,
-        )
-        raise BusinessException(
-            "微信手机号服务暂不可用，请稍后重试",
-            code="WECHAT_PHONE_FAILED",
-            status_code=502,
-        )
-
-    phone_info = payload.get("phone_info")
-    if not isinstance(phone_info, dict):
-        logger.warning("微信手机号响应缺少 phone_info")
-        raise BusinessException(
-            "未能获取手机号，请重试",
-            code="WECHAT_PHONE_FAILED",
-            status_code=502,
-        )
-
-    raw_mobile = (
-        phone_info.get("purePhoneNumber")
-        or phone_info.get("phoneNumber")
-        or ""
     )
-    mobile = _normalize_mobile(raw_mobile)
-    if not _MOBILE_PATTERN.fullmatch(mobile):
-        raise BusinessException(
-            "仅支持绑定中国大陆手机号",
-            code="INVALID_MOBILE",
-            status_code=400,
+
+
+async def _resolve_account_once(
+    session: AsyncSession,
+    *,
+    openid: str,
+    phone: str,
+    source_ip: str | None,
+) -> tuple[User, _LoginFlags]:
+    """在当前事务内执行 A / B-1 / B-2 三分支判定。
+
+    调用方负责在数据库唯一约束冲突后 rollback 并重试一次。
+    """
+
+    # ------------------------------------------------------------------
+    # 【分支A】openid 已绑定：直接使用该主账号，不合并。
+    # ------------------------------------------------------------------
+    binding = await session.scalar(
+        select(UserBindOpenid)
+        .where(UserBindOpenid.openid == openid)
+        .with_for_update()
+    )
+    if binding is not None:
+        user = await session.scalar(
+            select(User)
+            .where(User.id == binding.user_id)
+            .with_for_update()
         )
-    return mobile
+        if user is None:
+            # 绑定指向的主账号不存在属于脏数据，按冲突处理，不静默新建。
+            logger.error(
+                "openid 绑定的主账号不存在: openid=%s user_id=%s",
+                openid,
+                binding.user_id,
+            )
+            raise BusinessException(
+                "账号状态异常，请重试",
+                code="ACCOUNT_CONFLICT",
+                status_code=409,
+            )
+
+        binding.last_login_at = utc_now_default()
+        if user.mobile != phone:
+            # 分支A：以本次微信授权的最新手机号为准更新主账号。
+            occupied = await session.scalar(
+                select(User.id)
+                .where(User.mobile == phone, User.id != user.id)
+                .limit(1)
+            )
+            if occupied is not None:
+                # 新手机号已属于另一个主账号：不串号、不擅自合并两个已有
+                # 账号，交给人工或后续登录分支解决。
+                logger.warning(
+                    "手机号更新冲突: user_id=%s new_phone=%s occupied_user_id=%s",
+                    user.id,
+                    _masked(phone),
+                    occupied,
+                )
+                raise BusinessException(
+                    "该手机号已绑定其他账号，请联系客服",
+                    code="ACCOUNT_CONFLICT",
+                    status_code=409,
+                )
+            user.mobile = phone
+            user.phone_masked = _masked(phone)
+            _add_merge_log(
+                session,
+                user_id=user.id,
+                openid=openid,
+                action=_MERGE_ACTION_LOGIN_UPDATE,
+                source_ip=source_ip,
+            )
+            logger.info(
+                "手机号随微信授权更新: user_id=%s phone=%s",
+                user.id,
+                _masked(phone),
+            )
+
+        await session.flush()
+        return user, _LoginFlags(is_new_user=False, is_merged=False)
+
+    # ------------------------------------------------------------------
+    # 【分支B】openid 未绑定（新微信）：按手机号查已有主账号。
+    # ------------------------------------------------------------------
+    existing_user = await session.scalar(
+        select(User)
+        .where(User.mobile == phone)
+        .with_for_update()
+    )
+
+    if existing_user is not None:
+        # 【分支B-1】手机号命中老账号：只新增 openid 绑定，不新建主账号，
+        # 不迁移订单 / 课程 / 预约；它们全部按 user_id 天然继承。
+        session.add(
+            UserBindOpenid(
+                user_id=existing_user.id,
+                openid=openid,
+                wx_appid=(settings.wechat_app_id or "").strip(),
+                last_login_at=utc_now_default(),
+            )
+        )
+        if existing_user.phone_masked != _masked(phone):
+            existing_user.phone_masked = _masked(phone)
+        _add_merge_log(
+            session,
+            user_id=existing_user.id,
+            openid=openid,
+            action=_MERGE_ACTION_MERGE,
+            source_ip=source_ip,
+        )
+        await session.flush()
+        logger.info(
+            "微信合并到已有手机号账号: user_id=%s phone=%s",
+            existing_user.id,
+            _masked(phone),
+        )
+        return existing_user, _LoginFlags(is_new_user=False, is_merged=True)
+
+    # ------------------------------------------------------------------
+    # 【分支B-2】手机号和 openid 都未命中：新建主账号 + 首条绑定。
+    # ------------------------------------------------------------------
+    user = User(
+        mobile=phone,
+        phone_masked=_masked(phone),
+        status="active",
+    )
+    session.add(user)
+    # flush 取得自增 user_id，保证主账号与绑定、日志在同一事务内写入。
+    await session.flush()
+
+    session.add(
+        UserBindOpenid(
+            user_id=user.id,
+            openid=openid,
+            wx_appid=(settings.wechat_app_id or "").strip(),
+            last_login_at=utc_now_default(),
+        )
+    )
+    _add_merge_log(
+        session,
+        user_id=user.id,
+        openid=openid,
+        action=_MERGE_ACTION_CREATE,
+        source_ip=source_ip,
+    )
+    await session.flush()
+    logger.info(
+        "新账号创建: user_id=%s phone=%s",
+        user.id,
+        _masked(phone),
+    )
+    return user, _LoginFlags(is_new_user=True, is_merged=False)
+
+
+async def _resolve_account(
+    session: AsyncSession,
+    *,
+    openid: str,
+    phone: str,
+    source_ip: str | None,
+) -> tuple[User, _LoginFlags]:
+    """唯一约束兜底：冲突时回滚并重跑一次分支判定。
+
+    典型场景：
+    - 两个请求同时绑定同一 openid → 一个成功，另一个重跑后走分支A；
+    - 两个请求同时用同一手机号建号 → 一个成功，另一个重跑后走分支B-1。
+    重试仍冲突说明数据异常，返回 ACCOUNT_CONFLICT。
+    """
+
+    last_error: IntegrityError | None = None
+    for _attempt in range(2):
+        try:
+            user, flags = await _resolve_account_once(
+                session,
+                openid=openid,
+                phone=phone,
+                source_ip=source_ip,
+            )
+            # 账号解析与预赠认领同事务提交：认领失败则登录一并回滚，
+            # 用户重试登录时可安全重放。
+            await pregift_service.claim_phone_pregifts(
+                session,
+                user_id=user.id,
+                phone=phone,
+                source_ip=source_ip,
+            )
+            await session.commit()
+            await session.refresh(user)
+            return user, flags
+        except IntegrityError as exc:
+            last_error = exc
+            await session.rollback()
+            logger.warning("并发登录触发唯一约束冲突，重试分支判定")
+
+    logger.error("并发登录唯一约束冲突重试后仍失败")
+    raise BusinessException(
+        "并发登录冲突，请重试",
+        code="ACCOUNT_CONFLICT",
+        status_code=409,
+    ) from last_error
 
 
 async def wx_login(
     session: AsyncSession,
-    payload: WxLoginRequest,
+    redis: Redis,
+    *,
+    login_code: str,
+    phone_code: str,
+    source_ip: str | None = None,
 ) -> WxLoginResponse:
-    """微信静默登录：code → openid → 创建或复用用户 → 签发 C 端 JWT。"""
+    """微信一键登录：loginCode + phoneCode → 主账号 → 业务 Token。"""
 
-    openid = await _code_to_openid(payload.code.strip())
-    user, is_new_user = await user_service.get_or_create_by_openid(
-        session,
-        openid,
-    )
+    if not (phone_code or "").strip():
+        # 前端未拿到授权 code（用户拒绝或回调异常）。
+        raise BusinessException(
+            "需授权手机号才能完成登录",
+            code="PHONE_DENIED",
+            status_code=400,
+        )
+
+    # 微信网络请求放在锁外，避免慢请求占锁。
+    openid = await wechat_service.code_to_openid(login_code)
+    phone, _country_code = await wechat_service.fetch_phone_number(phone_code)
+
+    async with login_lock(redis, phone):
+        user, flags = await _resolve_account(
+            session,
+            openid=openid,
+            phone=phone,
+            source_ip=_source_ip(source_ip),
+        )
 
     logger.info(
-        "微信登录成功: user_id=%s mobile=%s is_new_user=%s",
+        "微信登录成功: user_id=%s phone=%s new=%s merged=%s",
         user.id,
-        user.mobile or "-",
-        is_new_user,
+        user.phone_masked or "-",
+        flags.is_new_user,
+        flags.is_merged,
     )
 
     return WxLoginResponse(
-        access_token=create_user_access_token(user.id),
-        expires_in=settings.user_jwt_expire_minutes * 60,
-        is_new_user=is_new_user,
-        user=UserResponse.model_validate(user),
+        token=create_user_access_token(user.id),
+        user_info=_login_user_info(user, openid=openid, flags=flags),
     )
 
 
-async def bind_mobile(
+async def token_check(
     session: AsyncSession,
-    *,
-    user_id: int,
-    payload: MobileBindRequest,
-) -> UserResponse:
-    """使用 getPhoneNumber 动态令牌绑定手机号。
+    redis: Redis,
+    token: str,
+) -> TokenCheckResponse:
+    """校验 Token 签名、有效期与吊销名单；无效返回 valid=false。"""
 
-    未绑定手机号的用户永远无法被后台赠课；绑定动作只影响赠课匹配，
-    不改变登录方式。
+    normalized = (token or "").strip()
+    if not normalized:
+        return TokenCheckResponse(valid=False)
+
+    if await is_user_token_revoked(redis, normalized):
+        return TokenCheckResponse(valid=False)
+
+    try:
+        user_id = decode_user_access_token(normalized)
+    except AuthenticationError:
+        return TokenCheckResponse(valid=False)
+
+    user = await session.scalar(select(User).where(User.id == user_id))
+    if user is None:
+        return TokenCheckResponse(valid=False)
+
+    return TokenCheckResponse(
+        valid=True,
+        user_info=_login_user_info(
+            user,
+            openid=user.openid,
+            flags=_LoginFlags(is_new_user=False, is_merged=False),
+        ),
+    )
+
+
+async def logout_user_token(redis: Redis, token: str | None) -> LogoutResponse:
+    """把当前 C 端 Token 写入吊销名单。
+
+    登出必须幂等：Token 已过期、已吊销或不是 C 端 Token 时仍返回成功，
+    前端按本地清理五步流程继续执行，不会因为后端报错而卡在已登录状态。
     """
 
-    mobile = await _fetch_mobile_by_code(payload.code.strip())
-    user = await user_service.update_mobile(session, user_id, mobile)
-    logger.info(
-        "手机号绑定成功: user_id=%s mobile=%s",
-        user.id,
-        user.mobile or "-",
-    )
-    return UserResponse.model_validate(user)
+    normalized = (token or "").strip()
+    if normalized:
+        try:
+            decode_user_access_token(normalized)
+        except AuthenticationError:
+            return LogoutResponse()
+        await revoke_user_token(redis, normalized)
+    return LogoutResponse()
 
 
 async def get_admin_profile(
@@ -407,7 +439,6 @@ async def admin_login(
     )
 
     if admin is None:
-        # 执行一次等价 bcrypt 校验，避免通过响应时间枚举管理员账号
         verify_password(payload.password, _DUMMY_PASSWORD_HASH)
         logger.warning(
             "管理员登录失败: account=%s reason=account_not_found",
@@ -444,7 +475,8 @@ async def admin_login(
 
 __all__ = [
     "admin_login",
-    "bind_mobile",
     "get_admin_profile",
+    "logout_user_token",
+    "token_check",
     "wx_login",
 ]

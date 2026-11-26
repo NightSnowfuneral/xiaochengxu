@@ -1,24 +1,25 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { ScrollView, Text, View } from '@tarojs/components'
 import Taro, {
+  useDidShow,
   usePullDownRefresh,
   useReachBottom
 } from '@tarojs/taro'
 
 import CourseCard from '../../components/CourseCard'
 import HotTopicCard from '../../components/HotTopicCard'
-import LoginModal from '../../components/LoginModal'
 import MockModeBadge from '../../components/MockModeBadge'
+import WxAuthSheet from '../../components/WxAuthSheet'
 import { DEFAULT_PAGE_SIZE, HOT_COURSE_PAGE_SIZE } from '../../constants'
-import { useAuthGuard } from '../../hooks/useAuthGuard'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { fetchConfigs } from '../../store/slices/configSlice'
 import {
   fetchCatalog,
-  fetchHotCourses
+  fetchHotCourses,
+  fetchMyCourses
 } from '../../store/slices/courseSlice'
-import { openLoginModal } from '../../utils/loginModal'
 import { goCourseDetail, goCourseList } from '../../utils/navigation'
 
 import './index.scss'
@@ -26,25 +27,42 @@ import './index.scss'
 export default function AcademyPage() {
   const dispatch = useAppDispatch()
   const config = useSystemConfig()
-  const { checking, allowed } = useAuthGuard()
+  const { openLogin } = useRequireAuth()
   const token = useAppSelector((state) => state.user.token)
   const isMockLogin = useAppSelector((state) => state.user.isMockLogin)
   const catalog = useAppSelector((state) => state.course.catalog)
   const hot = useAppSelector((state) => state.course.hot)
+  const mine = useAppSelector((state) => state.course.mine)
+  const shownOnceRef = useRef(false)
 
   useEffect(() => {
-    if (!allowed || !token) {
-      return
-    }
+    // 课程广场公开浏览，未登录也加载热门与全部课程。
     void dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
     void dispatch(fetchCatalog({ page: 1, pageSize: DEFAULT_PAGE_SIZE }))
-  }, [allowed, dispatch, token])
+  }, [dispatch])
 
-  usePullDownRefresh(() => {
-    if (!allowed || !token) {
-      void Taro.stopPullDownRefresh()
+  useEffect(() => {
+    // 我的课程属于身份数据：未登录绝不请求接口。
+    if (!token || isMockLogin) {
       return
     }
+    void dispatch(fetchMyCourses({ page: 1, pageSize: 3 }))
+  }, [dispatch, isMockLogin, token])
+
+  useDidShow(() => {
+    // 首次显示由上面的 effect 加载；之后回到本页时刷新，
+    // 确保后台收回课程后列表立即反映最新授权。
+    if (!shownOnceRef.current) {
+      shownOnceRef.current = true
+      return
+    }
+    if (!token || isMockLogin) {
+      return
+    }
+    void dispatch(fetchMyCourses({ page: 1, pageSize: 3 }))
+  })
+
+  usePullDownRefresh(() => {
     const tasks: Array<Promise<unknown>> = [
       dispatch(fetchConfigs()).unwrap().catch(() => undefined),
       dispatch(fetchHotCourses({ pageSize: HOT_COURSE_PAGE_SIZE }))
@@ -54,18 +72,20 @@ export default function AcademyPage() {
         .unwrap()
         .catch(() => undefined)
     ]
+    if (token && !isMockLogin) {
+      tasks.push(
+        dispatch(fetchMyCourses({ page: 1, pageSize: 3 }))
+          .unwrap()
+          .catch(() => undefined)
+      )
+    }
     void Promise.all(tasks).finally(() => {
       void Taro.stopPullDownRefresh()
     })
   })
 
   useReachBottom(() => {
-    if (
-      !allowed ||
-      !catalog.hasMore ||
-      catalog.status === 'loading' ||
-      catalog.page < 1
-    ) {
+    if (!catalog.hasMore || catalog.status === 'loading' || catalog.page < 1) {
       return
     }
     void dispatch(
@@ -87,6 +107,66 @@ export default function AcademyPage() {
         keyword: catalog.keyword,
         isHotTopic: catalog.isHotTopic || undefined
       })
+    )
+  }
+
+  const renderMineSection = () => {
+    if (!token) {
+      return (
+        <View className='state-block'>
+          <Text>登录后查看你的课程与预约</Text>
+          <Text
+            className='state-block__action'
+            onClick={() => openLogin('登录后查看你的课程与预约')}
+          >
+            手机号快捷登录
+          </Text>
+        </View>
+      )
+    }
+    if (isMockLogin) {
+      return (
+        <View className='academy-inline-note'>
+          测试模式不会请求真实课程列表；退出后使用手机号快捷登录即可查看已购课程。
+        </View>
+      )
+    }
+    if (mine.status === 'loading' && !mine.items.length) {
+      return <View className='loading-line'>正在加载我的课程…</View>
+    }
+    if (mine.status === 'error' && !mine.items.length) {
+      return (
+        <View className='state-block'>
+          <Text>{mine.error || '我的课程加载失败'}</Text>
+          <Text
+            className='state-block__action'
+            onClick={() => {
+              void dispatch(fetchMyCourses({ page: 1, pageSize: 3 }))
+            }}
+          >
+            重新加载
+          </Text>
+        </View>
+      )
+    }
+    if (!mine.items.length) {
+      return (
+        <View className='state-block'>
+          <Text>还没有课程，去课程广场看看吧</Text>
+        </View>
+      )
+    }
+    return (
+      <View>
+        {mine.items.slice(0, 3).map((course) => (
+          <CourseCard
+            key={course.id}
+            course={course}
+            owned
+            onTap={() => goCourseDetail(course.id)}
+          />
+        ))}
+      </View>
     )
   }
 
@@ -189,52 +269,47 @@ export default function AcademyPage() {
         </Text>
       </View>
 
-      {checking ? (
-        <View className='section'>
-          <View className='loading-line'>正在确认登录状态…</View>
+      <View className='section academy-hot'>
+        <View className='section-head'>
+          <Text className='section-title'>
+            {config.hot_topic_title || '热门课程'}
+          </Text>
+          <Text
+            className='section-more'
+            onClick={() => goCourseList({ mode: 'hot' })}
+          >
+            全部热门
+          </Text>
         </View>
-      ) : !allowed ? (
-        <View className='section'>
-          <View className='state-block'>
-            <Text>登录后即可查看商学院课程</Text>
+        {renderHotSection()}
+      </View>
+
+      <View className='section academy-mine'>
+        <View className='section-head'>
+          <Text className='section-title'>我的课程</Text>
+          {token ? (
             <Text
-              className='state-block__action'
-              onClick={() => openLoginModal('登录后即可查看课程')}
+              className='section-more'
+              onClick={() => goCourseList({ mode: 'mine' })}
             >
-              去登录
+              全部
             </Text>
-          </View>
+          ) : null}
         </View>
-      ) : (
-        <>
-          <View className='section academy-hot'>
-            <View className='section-head'>
-              <Text className='section-title'>
-                {config.hot_topic_title || '热门课程'}
-              </Text>
-              <Text
-                className='section-more'
-                onClick={() => goCourseList({ mode: 'hot' })}
-              >
-                全部热门
-              </Text>
-            </View>
-            {renderHotSection()}
-          </View>
+        {renderMineSection()}
+      </View>
 
-          <View className='section academy-catalog'>
-            <View className='section-head'>
-              <Text className='section-title'>全部课程</Text>
-              <Text className='academy-catalog__count'>
-                共 {catalog.total} 门
-              </Text>
-            </View>
-            {renderCatalog()}
-          </View>
-        </>
-      )}
+      <View className='section academy-catalog'>
+        <View className='section-head'>
+          <Text className='section-title'>全部课程</Text>
+          <Text className='academy-catalog__count'>
+            共 {catalog.total} 门
+          </Text>
+        </View>
+        {renderCatalog()}
+      </View>
 
-      <LoginModal />
+      <WxAuthSheet />
     </View>
   )
 }

@@ -17,6 +17,7 @@ import {
 import { ReloadOutlined } from '@ant-design/icons'
 
 import { getErrorMessage } from '../../api/request'
+import AppointmentSlotConfigPanel from '../../components/admin/AppointmentSlotConfigPanel'
 import AdminPageHeader from '../../components/admin/PageHeader'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import {
@@ -49,8 +50,8 @@ const GROUP_DEFINITIONS: Array<{
   {
     key: 'home',
     title: '首页文案',
-    description: '小程序首页的标题、热门板块标题与公告。',
-    keys: ['home_title', 'home_hot_title', 'home_notice']
+    description: '小程序首页的标题、副标题、热门板块标题与公告。',
+    keys: ['home_title', 'home_subtitle', 'home_hot_title', 'home_notice']
   },
   {
     key: 'course',
@@ -528,7 +529,7 @@ export default function SysConfigPage() {
       <AdminPageHeader
         eyebrow="SYSTEM"
         title="系统配置"
-        description="配置只承载展示文案，不承载权限、价格或业务开关。配置键由后端初始化且不可修改、不可新增或删除。"
+        description="站点文案配置只承载展示文案，不承载权限或价格；预约时段规则在「预约设置」中单独维护。配置键由后端初始化且不可修改、不可新增或删除。"
         extra={
           <>
             <Button
@@ -557,7 +558,7 @@ export default function SysConfigPage() {
         showIcon
         className="mb-4"
         message="配置边界"
-        description="后台只能编辑每条配置的当前值，不能修改配置键，也不能新增或删除配置项。修改保存后，小程序在页面 onShow 时拉取最新文案；底部 Tab 固定两个，仅支持修改文字。"
+        description="后台只能编辑每条配置的当前值，不能修改配置键，也不能新增或删除配置项。修改保存后，小程序在页面 onShow 时拉取最新文案；底部 Tab 固定两个，仅支持修改文字。预约时段规则单独维护，保存后立即影响新预约。"
       />
 
       <Tabs
@@ -638,6 +639,11 @@ export default function SysConfigPage() {
               key: 'site',
               label: '站点文案',
               children: siteCopyContent
+            },
+            {
+              key: 'appointment',
+              label: '预约设置',
+              children: <AppointmentSlotConfigPanel />
             },
             {
               key: 'support',

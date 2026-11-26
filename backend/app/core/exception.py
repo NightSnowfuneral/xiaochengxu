@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -224,7 +225,9 @@ def _http_error_response(exc: StarletteHTTPException) -> JSONResponse:
     )
 
 
-def _validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
+def _validation_details(
+    exc: RequestValidationError | PydanticValidationError,
+) -> list[dict[str, Any]]:
     details: list[dict[str, Any]] = []
     for error in exc.errors():
         location = error.get("loc", ())
@@ -275,6 +278,20 @@ async def _handle_validation_exception(
     _request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    return _error_response(
+        status_code=422,
+        code="VALIDATION_ERROR",
+        message="请求参数校验失败",
+        data=_validation_details(exc),
+    )
+
+
+async def _handle_pydantic_validation_exception(
+    _request: Request,
+    exc: PydanticValidationError,
+) -> JSONResponse:
+    """查询参数依赖模型（Depends()）的校验失败统一按 422 返回。"""
+
     return _error_response(
         status_code=422,
         code="VALIDATION_ERROR",
@@ -389,6 +406,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(BusinessException, _handle_business_exception)
     app.add_exception_handler(StarletteHTTPException, _handle_http_exception)
     app.add_exception_handler(RequestValidationError, _handle_validation_exception)
+    app.add_exception_handler(
+        PydanticValidationError,
+        _handle_pydantic_validation_exception,
+    )
     app.add_exception_handler(Exception, _handle_unexpected_exception)
 
 

@@ -11,6 +11,8 @@ Compose 注入环境变量，不依赖镜像内存在 `.env` 文件。
 
 from __future__ import annotations
 
+import base64
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -116,6 +118,37 @@ class Settings(BaseSettings):
     wechat_pay_notify_url: str | None = None
     # 支付成功后课程授权的有效天数；续期与首次购买均使用该值。
     course_valid_day: int = Field(default=365, ge=1, le=36500)
+    # 待支付订单超时自动关闭：分钟数与扫描周期。
+    order_close_timeout_minutes: int = Field(default=30, ge=1)
+    order_close_scan_interval_seconds: int = Field(default=300, ge=10)
+    # 每日对账：周期与回溯天数；只检查近期订单，避免全表扫描。
+    order_reconcile_interval_seconds: int = Field(default=86400, ge=600)
+    order_reconcile_lookback_days: int = Field(default=7, ge=1, le=90)
+
+    # ------------------------------------------------------------------
+    # 微信小程序虚拟支付（xpay）消息推送
+    # ------------------------------------------------------------------
+    # 每个环境三项必须同时配置；Token 与 EncodingAESKey 用于验签 / AES
+    # 解密，AppKey 用于服务端下单签名（paySig），不参与回调验签。
+    wechat_xpay_prod_app_key: SecretStr | None = None
+    wechat_xpay_prod_msg_token: SecretStr | None = None
+    wechat_xpay_prod_encoding_aes_key: SecretStr | None = None
+    wechat_xpay_sandbox_app_key: SecretStr | None = None
+    wechat_xpay_sandbox_msg_token: SecretStr | None = None
+    wechat_xpay_sandbox_encoding_aes_key: SecretStr | None = None
+    # 小程序虚拟支付后台「支付基础配置」中的 offerId；现网与沙箱共用。
+    wechat_xpay_offer_id: str | None = None
+    # 已处理 xpay 订单的 Redis 幂等键 TTL（秒，默认 30 天）。
+    wechat_xpay_idempotency_ttl_seconds: int = Field(
+        default=2592000,
+        ge=60,
+    )
+    # 回调报文硬上限；必须小于 MySQL TEXT 的 64 KiB 上限。
+    wechat_xpay_max_body_bytes: int = Field(
+        default=49152,
+        ge=1024,
+        le=65536,
+    )
 
     # ------------------------------------------------------------------
     # 腾讯云 COS
@@ -158,6 +191,12 @@ class Settings(BaseSettings):
         "wechat_app_secret",
         "wechat_pay_api_v3_key",
         "wechat_pay_public_key",
+        "wechat_xpay_prod_app_key",
+        "wechat_xpay_prod_msg_token",
+        "wechat_xpay_prod_encoding_aes_key",
+        "wechat_xpay_sandbox_app_key",
+        "wechat_xpay_sandbox_msg_token",
+        "wechat_xpay_sandbox_encoding_aes_key",
         "tencentcloud_secret_key",
         "vod_play_key",
         mode="before",
@@ -249,6 +288,68 @@ class Settings(BaseSettings):
             raise ValueError("WECHAT_PAY_API_V3_KEY 必须为 32 字节")
         return value
 
+    @field_validator(
+        "wechat_xpay_prod_app_key",
+        "wechat_xpay_sandbox_app_key",
+    )
+    @classmethod
+    def validate_xpay_app_key(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value().strip()
+        if not raw:
+            return None
+        if len(raw) < 8 or len(raw) > 128:
+            raise ValueError("虚拟支付 AppKey 长度必须在 8–128 个字符之间")
+        return SecretStr(raw)
+
+    @field_validator(
+        "wechat_xpay_prod_msg_token",
+        "wechat_xpay_sandbox_msg_token",
+    )
+    @classmethod
+    def validate_xpay_msg_token(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value().strip()
+        if not raw:
+            return None
+        if re.fullmatch(r"[A-Za-z0-9_]{3,32}", raw) is None:
+            raise ValueError(
+                "虚拟支付消息 Token 只能包含字母、数字、下划线，长度 3–32"
+            )
+        return SecretStr(raw)
+
+    @field_validator(
+        "wechat_xpay_prod_encoding_aes_key",
+        "wechat_xpay_sandbox_encoding_aes_key",
+    )
+    @classmethod
+    def validate_xpay_encoding_aes_key(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value().strip()
+        if not raw:
+            return None
+        if len(raw) != 43:
+            raise ValueError("虚拟支付 EncodingAESKey 必须为 43 个字符")
+        try:
+            decoded = base64.b64decode(raw + "=", validate=True)
+        except Exception as exc:
+            raise ValueError("虚拟支付 EncodingAESKey 不是合法 Base64") from exc
+        if len(decoded) != 32:
+            raise ValueError("虚拟支付 EncodingAESKey 解码后必须为 32 字节")
+        return SecretStr(raw)
+
     @field_validator("vod_app_id", mode="before")
     @classmethod
     def empty_vod_app_id_to_none(cls, value: object) -> object:
@@ -302,6 +403,77 @@ class Settings(BaseSettings):
         ):
             raise ValueError("学习进度落库周期必须小于 Redis 缓冲 TTL")
         return self
+
+    @model_validator(mode="after")
+    def validate_xpay_profiles(self) -> Settings:
+        groups = (
+            (
+                "WECHAT_XPAY_PROD",
+                (
+                    self.wechat_xpay_prod_app_key,
+                    self.wechat_xpay_prod_msg_token,
+                    self.wechat_xpay_prod_encoding_aes_key,
+                ),
+            ),
+            (
+                "WECHAT_XPAY_SANDBOX",
+                (
+                    self.wechat_xpay_sandbox_app_key,
+                    self.wechat_xpay_sandbox_msg_token,
+                    self.wechat_xpay_sandbox_encoding_aes_key,
+                ),
+            ),
+        )
+        configured = False
+        for label, values in groups:
+            present = [value for value in values if value is not None]
+            if present and len(present) != len(values):
+                raise ValueError(
+                    f"{label}_APP_KEY / {label}_MSG_TOKEN / "
+                    f"{label}_ENCODING_AES_KEY 必须同时配置"
+                )
+            configured = configured or bool(present)
+
+        if configured and not self.wechat_app_id:
+            raise ValueError("配置微信虚拟支付时 WECHAT_APP_ID 不能为空")
+
+        prod_token = self.wechat_xpay_prod_msg_token
+        sandbox_token = self.wechat_xpay_sandbox_msg_token
+        prod_aes = self.wechat_xpay_prod_encoding_aes_key
+        sandbox_aes = self.wechat_xpay_sandbox_encoding_aes_key
+        if (
+            prod_token is not None
+            and sandbox_token is not None
+            and prod_token.get_secret_value()
+            == sandbox_token.get_secret_value()
+        ):
+            raise ValueError(
+                "正式与沙箱虚拟支付的 MSG_TOKEN 必须不同，否则无法区分环境"
+            )
+        if (
+            prod_aes is not None
+            and sandbox_aes is not None
+            and prod_aes.get_secret_value()
+            == sandbox_aes.get_secret_value()
+        ):
+            raise ValueError(
+                "正式与沙箱虚拟支付的 ENCODING_AES_KEY 必须不同，否则无法区分环境"
+            )
+        return self
+
+    @property
+    def xpay_configured(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.wechat_xpay_prod_app_key,
+                self.wechat_xpay_prod_msg_token,
+                self.wechat_xpay_prod_encoding_aes_key,
+                self.wechat_xpay_sandbox_app_key,
+                self.wechat_xpay_sandbox_msg_token,
+                self.wechat_xpay_sandbox_encoding_aes_key,
+            )
+        )
 
     @property
     def cors_origins(self) -> list[str]:

@@ -171,18 +171,13 @@ const courseSlice = createSlice({
         isHotTopic: Boolean(action.payload?.isHotTopic)
       }
     },
-    resetCourseData() {
-      return {
-        catalog: createListView(),
-        hot: {
-          items: [],
-          total: 0,
-          status: 'idle' as const,
-          error: null
-        },
-        mine: createListView(),
-        details: {}
-      }
+    /**
+     * 仅清理与身份绑定的数据（我的课程、课程详情中的 is_owned）。
+     * 热门与课程目录是公开只读数据，登出后保留，首页与课程 Tab 不会闪空。
+     */
+    resetOwnerScopedCourseData(state) {
+      state.mine = createListView()
+      state.details = {}
     }
   },
   extraReducers: (builder) => {
@@ -299,7 +294,8 @@ const courseSlice = createSlice({
   }
 })
 
-export const { resetCatalog, resetCourseData } = courseSlice.actions
+export const { resetCatalog, resetOwnerScopedCourseData } =
+  courseSlice.actions
 
 export const selectCatalog = (state: { course: CourseState }): ListViewState =>
   state.course.catalog

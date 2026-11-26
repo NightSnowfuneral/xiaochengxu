@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,11 +28,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.deps import SessionFactory, close_infra
 from .api.v1 import api_router
 from .api.vod import router as vod_router
+from .api.wx import router as wx_router
 from .core.config import settings
 from .core.exception import register_exception_handlers
 from .core.logging import configure_logging
 from .services.bootstrap_service import initialize_application_data
+from .tasks.order_close import run_order_close_task
+from .tasks.order_reconcile import run_order_reconcile_task
 from .tasks.progress_flush import run_progress_flush_task
+from .tasks.xpay_jobs import run_xpay_jobs_task
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +52,7 @@ _CORS_ALLOW_HEADERS = [
 ]
 
 
-def _on_progress_task_done(task: asyncio.Task[None]) -> None:
+def _on_task_done(name: str, task: asyncio.Task[None]) -> None:
     """记录后台任务意外退出，避免异常被静默吞掉。"""
 
     if task.cancelled():
@@ -55,7 +60,8 @@ def _on_progress_task_done(task: asyncio.Task[None]) -> None:
     exception = task.exception()
     if exception is not None:
         logger.error(
-            "学习进度落库任务意外退出",
+            "后台任务意外退出: %s",
+            name,
             exc_info=exception,
         )
 
@@ -64,7 +70,18 @@ def _on_progress_task_done(task: asyncio.Task[None]) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期：启动初始化 + 后台任务 + 优雅关闭。"""
 
-    progress_task: asyncio.Task[None] | None = None
+    background_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def _start_task(
+        name: str,
+        coroutine: Coroutine[Any, Any, None],
+    ) -> None:
+        task = asyncio.create_task(coroutine, name=name)
+        task.add_done_callback(
+            lambda done, task_name=name: _on_task_done(task_name, done)
+        )
+        background_tasks[name] = task
+
     try:
         try:
             async with SessionFactory() as session:
@@ -73,24 +90,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.exception("应用启动初始化失败")
             raise
 
-        progress_task = asyncio.create_task(
-            run_progress_flush_task(),
-            name="study-progress-flush",
+        _start_task("study-progress-flush", run_progress_flush_task())
+        _start_task("order-timeout-close", run_order_close_task())
+        _start_task("order-reconcile", run_order_reconcile_task())
+        if settings.xpay_configured and settings.app_env != "test":
+            _start_task("xpay-jobs", run_xpay_jobs_task())
+
+        app.state.background_tasks = background_tasks
+        app.state.progress_flush_task = background_tasks.get(
+            "study-progress-flush"
         )
-        progress_task.add_done_callback(_on_progress_task_done)
-        app.state.progress_flush_task = progress_task
+        app.state.order_close_task = background_tasks.get(
+            "order-timeout-close"
+        )
+        app.state.order_reconcile_task = background_tasks.get(
+            "order-reconcile"
+        )
+        app.state.xpay_jobs_task = background_tasks.get("xpay-jobs")
 
         logger.info("应用启动完成：%s", settings.app_name)
         yield
     finally:
-        if progress_task is not None:
-            progress_task.cancel()
+        for task in background_tasks.values():
+            task.cancel()
+        for task in background_tasks.values():
             try:
-                await progress_task
+                await task
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception("学习进度落库任务异常终止")
+                logger.exception("后台任务异常终止: %s", task.get_name())
 
         try:
             await close_infra()
@@ -128,6 +157,9 @@ def create_app() -> FastAPI:
     # 播放器完成回调按产品约定固定在 /api/vod/finish-lesson，
     # 不跟随 API 版本前缀；鉴权与版本化接口共用 C 端 JWT。
     app.include_router(vod_router, prefix="/api")
+    # 微信虚拟支付消息推送固定为 /api/wx/xpay/callback，不做 JWT 鉴权，
+    # 只信任微信协议签名。
+    app.include_router(wx_router, prefix="/api")
     return app
 
 

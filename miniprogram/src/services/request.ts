@@ -34,6 +34,17 @@ export class ApiError extends Error {
   }
 }
 
+/** 请求扩展配置：部分接口需要自行处理 401，不触发全局登出逻辑。 */
+export interface ApiRequestConfig extends AxiosRequestConfig {
+  /**
+   * 为 true 时，401 不进入全局未授权处理（不清本地状态）。
+   * 用于登录、登出与冷启动 Token 校验：它们由调用方自行完成清理。
+   */
+  skipAuthHandler?: boolean
+  /** 为 true 时不附加 Authorization，用于公开只读接口。 */
+  skipAuth?: boolean
+}
+
 type UnauthorizedHandler = () => void
 
 let unauthorizedHandler: UnauthorizedHandler | null = null
@@ -51,6 +62,29 @@ function notifyUnauthorized(): void {
   }
   lastUnauthorizedAt = now
   unauthorizedHandler?.()
+}
+
+/**
+ * 业务接口返回 401 时的统一入口。
+ *
+ * axios 请求由响应拦截器自动调用；Taro.uploadFile 等未走 axios 的请求
+ * 需要在 401 分支手动调用，保证任何接口失效都会清理登录态并停留当前页。
+ */
+export function reportUnauthorized(): void {
+  const { isMockLogin } = getAuthSession()
+  if (isMockLogin) {
+    // 模拟 Token 本来就不被后端接受，401 是预期结果，不能因此清掉测试会话。
+    if (!mockUnauthorizedToastShown) {
+      mockUnauthorizedToastShown = true
+      void Taro.showToast({
+        title: '测试模式：接口未授权（预期）',
+        icon: 'none',
+        duration: 2200
+      })
+    }
+    return
+  }
+  notifyUnauthorized()
 }
 
 function stringifyParams(params: unknown): string {
@@ -183,8 +217,9 @@ const http = axios.create({
 
 http.interceptors.request.use((config) => {
   const { token } = getAuthSession()
-  const isLoginEndpoint = (config.url || '').includes('/client/auth/wx-login')
-  if (token && !isLoginEndpoint) {
+  const isLoginEndpoint = (config.url || '').includes('/auth/wx-login')
+  const skipAuth = Boolean((config as ApiRequestConfig).skipAuth)
+  if (token && !isLoginEndpoint && !skipAuth) {
     config.headers.set('Authorization', `Bearer ${token}`)
   }
   config.headers.set('Accept', 'application/json')
@@ -198,23 +233,15 @@ http.interceptors.response.use(
     const requestUrl = axios.isAxiosError(error)
       ? error.config?.url || ''
       : ''
-    const isLoginEndpoint = requestUrl.includes('/client/auth/wx-login')
+    const isLoginEndpoint = requestUrl.includes('/auth/wx-login')
+    const skipAuthHandler = Boolean(
+      axios.isAxiosError(error)
+        ? (error.config as ApiRequestConfig | undefined)?.skipAuthHandler
+        : false
+    )
 
-    if (normalized.status === 401 && !isLoginEndpoint) {
-      const { isMockLogin } = getAuthSession()
-      if (isMockLogin) {
-        // 模拟 Token 本来就不被后端接受，401 是预期结果，不能因此清掉测试会话。
-        if (!mockUnauthorizedToastShown) {
-          mockUnauthorizedToastShown = true
-          void Taro.showToast({
-            title: '测试模式：接口未授权（预期）',
-            icon: 'none',
-            duration: 2200
-          })
-        }
-      } else {
-        notifyUnauthorized()
-      }
+    if (normalized.status === 401 && !isLoginEndpoint && !skipAuthHandler) {
+      reportUnauthorized()
     }
 
     if (IS_DEV) {
@@ -268,7 +295,7 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export async function request<T>(
-  config: AxiosRequestConfig
+  config: ApiRequestConfig
 ): Promise<T> {
   const response = await http.request<T>(config)
   return response.data

@@ -20,7 +20,7 @@
 | 健康检查 | `https://api.qinghebacademy.cn/api/v1/health` | 部署脚本与监控使用 |
 | 管理后台 | `https://api.qinghebacademy.cn/admin/` | 静态资源由 Nginx 提供 |
 | 管理员登录接口 | `POST https://api.qinghebacademy.cn/api/v1/admin/auth/login` | 免 Admin JWT |
-| C 端微信登录接口 | `POST https://api.qinghebacademy.cn/api/v1/client/auth/wx-login` | 免 JWT，见 [API.md](API.md) |
+| C 端微信登录接口 | `POST https://api.qinghebacademy.cn/api/v1/auth/wx-login` | 免 JWT，见 [API.md](API.md) |
 | 微信支付回调 | `https://api.qinghebacademy.cn/api/v1/payments/wechat/notify` | 不走 JWT，只校验微信签名 |
 | 小程序播放完成回调 | `https://api.qinghebacademy.cn/api/vod/finish-lesson` | 注意**不带** `/v1`，固定挂在 `/api/vod` |
 | 小程序 request 合法域名 | `https://api.qinghebacademy.cn` | 只填 origin，不带路径、端口、IP |
@@ -308,15 +308,32 @@ docker compose --env-file .env -f deploy/docker-compose.prod.yml \
 | 商户 API 证书 / APIv3 密钥 | 支付下单与回调验签失败 | 新证书放 `deploy/secrets`，更新序列号与路径 → 重建；商户平台回调配置同步 |
 | COS / VOD 腾讯云密钥 | 上传、播放签名失败 | CAM 生成新密钥 → 更新 `.env` → 重建 |
 | `VOD_PLAY_KEY` | 已签发播放地址在有效期内仍可用，新地址改用新签名 | 更新 `.env` → 重建 |
+| `WECHAT_XPAY_PROD_APP_KEY` / `..._MSG_TOKEN` / `..._ENCODING_AES_KEY` | 虚拟支付下单签名（iOS/Android 全端）与推送验签、发货立刻失败 | 微信公众平台重置后同步 `.env` → 重建；推送配置需保持一致 |
+
+### 5.4 小程序虚拟支付（课程为虚拟商品，全端必须使用虚拟支付）
+
+微信审核要求：虚拟商品只能通过官方「小程序虚拟支付」售卖，不得出现任何普通微信支付购买入口。
+控制台路径：微信公众平台 → 支付与交易 → 虚拟支付。
+
+- **基础配置**：填写「小程序简称」（Apple 支付展示名，需与主体/品牌一致）；开启「是否启用苹果 IAP 支付」（不开启时 iOS 下单返回 `15001`，约 10 分钟生效）。
+- **道具管理**：道具 ID 必须与 `vpay_products.product_id` 一致，价格（分）必须等于 `courses.price`；保存后**发布到线上**（未发布/未生效返回 `15010` / `15014`）。
+- **iOS 要求**：微信 ≥ 8.0.68、iOS ≥ 15、中国大陆 Apple ID；道具单价 ≥ 1 元；iOS 无沙箱，`env` 固定 `0`。
+- **消息推送**：回调地址 `https://api.qinghebacademy.cn/api/wx/xpay/callback`（XML、安全模式加密，Token / AESKey 与 `.env` 中 `WECHAT_XPAY_PROD_*` 一致）。
+- **服务端 `.env`**：`WECHAT_XPAY_OFFER_ID`、`WECHAT_XPAY_PROD_APP_KEY`、`WECHAT_XPAY_PROD_MSG_TOKEN`、`WECHAT_XPAY_PROD_ENCODING_AES_KEY`（沙箱另配一套）。
+- **审核备注建议**：本小程序课程为虚拟商品，已接入小程序虚拟支付，Android / iOS 均通过 `wx.requestVirtualPayment` 完成购买，无任何普通微信支付购买入口。
 
 ---
 
 ## 6. 上线前配置检查
 
 - [ ] 域名 `api.qinghebacademy.cn` 完成 ICP 备案，HTTPS 证书有效且未过期
-- [ ] 微信公众平台「开发设置 → 服务器域名」已添加 `https://api.qinghebacademy.cn`（request 合法域名）
+- [ ] 微信公众平台「开发设置 → 服务器域名」已添加 `https://api.qinghebacademy.cn`（request 与 uploadFile 合法域名；头像上传使用 `Taro.uploadFile`）
 - [ ] 小程序线上包使用 `npm run build:weapp:online` 构建，包内 API 地址为正式域名
 - [ ] 微信支付回调地址在商户平台可达，返回 HTTP 200，且回调接口不要求 JWT
+- [ ] 虚拟支付已签约并配置 `WECHAT_XPAY_OFFER_ID` 与现网 AppKey / MsgToken / EncodingAESKey；推送地址 `/api/wx/xpay/callback` 握手通过
+- [ ] 虚拟支付基础配置已开启「苹果 IAP 支付」并填写小程序简称（否则 iOS 下单返回 15001）
+- [ ] 线上道具已发布且价格与课程价一致；`vpay_products` 映射 `enabled=1` 且 `env=0`
+- [ ] `npm run build:weapp:online` 产物中不存在 `wx.requestPayment`，购买只使用 `wx.requestVirtualPayment`
 - [ ] COS 桶 CORS、最小权限策略、公网读配置正确
 - [ ] VOD 应用已开启 Key 防盗链，`VOD_UPLOAD_PROCEDURE` 与点播控制台模板一致
 - [ ] 管理员密码已改为强密码并由专人保管；`ADMIN_INITIAL_PASSWORD` 不再作为日常登录凭据

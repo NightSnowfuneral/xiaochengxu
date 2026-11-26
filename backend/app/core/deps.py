@@ -15,9 +15,12 @@ from typing import Annotated
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.asyncio import Redis
 
 from .exception import AuthenticationError, PermissionDeniedError
+from .redis import get_redis
 from .security import decode_admin_access_token, decode_user_access_token
+from .token_revocation import is_user_token_revoked
 
 bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -52,15 +55,32 @@ def _extract_bearer_token(
     return token
 
 
+async def user_token_dep(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+) -> str:
+    """提取 C 端原始 Bearer Token，供登出接口写入吊销名单。"""
+
+    return _extract_bearer_token(credentials)
+
+
 async def user_dep(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> UserIdentity:
-    """校验 C 端用户 JWT，返回当前用户身份。"""
+    """校验 C 端用户 JWT，返回当前用户身份。
+
+    JWT 签名有效之外，还要确认该 Token 未在登出接口被吊销。
+    """
 
     token = _extract_bearer_token(credentials)
+    if await is_user_token_revoked(redis, token):
+        raise AuthenticationError()
     try:
         user_id = decode_user_access_token(token)
     except AuthenticationError as user_token_error:
@@ -74,6 +94,29 @@ async def user_dep(
         ) from None
 
     return UserIdentity(user_id=user_id)
+
+
+async def optional_user_dep(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> UserIdentity | None:
+    """可选 C 端身份：匿名放行，携带 Token 时仍执行完整校验。
+
+    课程广场与课程详情允许游客只读；一旦请求带了 Bearer Token，就必须是
+    有效且未吊销的 C 端 Token（无效返回 401，Admin Token 返回 403），
+    避免前端拿着过期 Token 时被静默当作匿名用户。
+    """
+
+    if (
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not credentials.credentials.strip()
+    ):
+        return None
+    return await user_dep(credentials, redis)
 
 
 async def admin_dep(
@@ -101,14 +144,20 @@ async def admin_dep(
 
 
 UserDep = Annotated[UserIdentity, Depends(user_dep)]
+OptionalUserDep = Annotated[UserIdentity | None, Depends(optional_user_dep)]
+UserTokenDep = Annotated[str, Depends(user_token_dep)]
 AdminDep = Annotated[AdminIdentity, Depends(admin_dep)]
 
 __all__ = [
     "AdminDep",
     "AdminIdentity",
+    "OptionalUserDep",
     "UserDep",
     "UserIdentity",
+    "UserTokenDep",
     "admin_dep",
     "bearer_scheme",
+    "optional_user_dep",
     "user_dep",
+    "user_token_dep",
 ]

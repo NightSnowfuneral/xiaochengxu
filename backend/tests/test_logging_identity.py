@@ -14,7 +14,7 @@ from app.core.security import (
     create_user_access_token,
 )
 from app.schemas import WeChatPayParams
-from app.services import auth_service, pay_service
+from app.services import pay_service, wechat_service
 from tests.factories import (
     API_PREFIX,
     TEST_ADMIN_PASSWORD,
@@ -24,15 +24,14 @@ from tests.factories import (
     grant_course_access,
 )
 
-WX_LOGIN_URL = f"{API_PREFIX}/client/auth/wx-login"
-BIND_MOBILE_URL = f"{API_PREFIX}/client/auth/bind-mobile"
+WX_LOGIN_URL = f"{API_PREFIX}/auth/wx-login"
 ADMIN_LOGIN_URL = f"{API_PREFIX}/admin/auth/login"
 ORDER_URL = f"{API_PREFIX}/client/orders"
 GIFT_URL = f"{API_PREFIX}/admin/gifts"
 NOTIFY_URL = f"{API_PREFIX}/payments/wechat/notify"
 
 
-async def test_c_side_login_and_mobile_binding_log_phone(
+async def test_c_side_login_logs_masked_phone_without_token(
     client,
     monkeypatch,
     caplog,
@@ -40,42 +39,35 @@ async def test_c_side_login_and_mobile_binding_log_phone(
     async def fake_code_to_openid(code: str) -> str:
         return "openid_logging_identity"
 
-    async def fake_fetch_mobile(code: str) -> str:
-        return TEST_MOBILE
+    async def fake_fetch_phone(code: str) -> tuple[str, str]:
+        return TEST_MOBILE, "86"
 
     monkeypatch.setattr(
-        auth_service,
-        "_code_to_openid",
+        wechat_service,
+        "code_to_openid",
         fake_code_to_openid,
     )
     monkeypatch.setattr(
-        auth_service,
-        "_fetch_mobile_by_code",
-        fake_fetch_mobile,
+        wechat_service,
+        "fetch_phone_number",
+        fake_fetch_phone,
     )
     caplog.set_level(logging.INFO)
 
-    login = await client.post(WX_LOGIN_URL, json={"code": "wx-code"})
+    login = await client.post(
+        WX_LOGIN_URL,
+        json={"loginCode": "wx-code", "phoneCode": "phone-code"},
+    )
     assert login.status_code == 200, login.text
     login_body = login.json()
-    user_id = login_body["user"]["id"]
-    access_token = login_body["access_token"]
+    user_id = login_body["userInfo"]["userId"]
+    access_token = login_body["token"]
 
     assert "微信登录成功" in caplog.text
     assert f"user_id={user_id}" in caplog.text
-    assert "mobile=-" in caplog.text
+    assert "phone=138****8000" in caplog.text
+    assert TEST_MOBILE not in caplog.text
     assert access_token not in caplog.text
-
-    caplog.clear()
-    bind = await client.post(
-        BIND_MOBILE_URL,
-        headers=auth_headers(access_token),
-        json={"code": "phone-code"},
-    )
-    assert bind.status_code == 200, bind.text
-    assert "手机号绑定成功" in caplog.text
-    assert f"user_id={user_id}" in caplog.text
-    assert f"mobile={TEST_MOBILE}" in caplog.text
 
 
 async def test_admin_login_logs_account_without_password(

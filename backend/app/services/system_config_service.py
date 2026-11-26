@@ -39,6 +39,11 @@ class DefaultConfig:
 # 默认配置顺序即后台展示顺序。tab_ 前缀的键必须恰好两个。
 DEFAULT_CONFIGS: tuple[DefaultConfig, ...] = (
     DefaultConfig("home_title", "禾下美学院", "首页主标题"),
+    DefaultConfig(
+        "home_subtitle",
+        "以系统课程，点亮每一次成长",
+        "首页副标题",
+    ),
     DefaultConfig("home_hot_title", "热门课程", "首页热门课程板块标题"),
     DefaultConfig(
         "home_notice",

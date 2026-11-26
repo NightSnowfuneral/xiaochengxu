@@ -1,0 +1,243 @@
+.auth-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.auth-sheet__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(24, 20, 15, 0.52);
+  animation: auth-sheet-fade 0.2s ease-out;
+}
+
+.auth-sheet__panel {
+  position: relative;
+  width: 100%;
+  padding: 58px 48px calc(42px + env(safe-area-inset-bottom));
+  border: 1px solid rgba(163, 118, 50, 0.22);
+  border-bottom: none;
+  border-radius: 36px 36px 0 0;
+  background: linear-gradient(180deg, #fffdf8 0%, #fdfaf4 100%);
+  box-shadow: 0 -20px 60px rgba(52, 40, 24, 0.22);
+  box-sizing: border-box;
+  text-align: center;
+  animation: auth-sheet-up 0.26s ease-out;
+}
+
+.auth-sheet__close {
+  position: absolute;
+  top: 28px;
+  right: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  border: 1px solid rgba(163, 118, 50, 0.28);
+  border-radius: 50%;
+  color: #8c8175;
+  font-size: 38px;
+  line-height: 1;
+}
+
+.auth-sheet__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+  height: 92px;
+  margin: 0 auto 26px;
+  border-radius: 28px;
+  background: linear-gradient(135deg, #2f281f, #211c15);
+  box-shadow: 0 12px 28px rgba(33, 28, 21, 0.28);
+}
+
+.auth-sheet__logo-text {
+  color: #d9b878;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 48px;
+  line-height: 1;
+}
+
+.auth-sheet__title {
+  display: block;
+  color: #2e271e;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.auth-sheet__subtitle {
+  display: block;
+  margin-top: 18px;
+  color: #8c8377;
+  font-size: 24px;
+  line-height: 1.7;
+}
+
+.auth-sheet__reason {
+  display: block;
+  margin-top: 22px;
+  padding: 16px 24px;
+  border: 1px solid rgba(163, 118, 50, 0.2);
+  border-radius: 20px;
+  background: rgba(247, 239, 224, 0.8);
+  color: #8a6128;
+  font-size: 22px;
+  line-height: 1.6;
+}
+
+.auth-sheet__error {
+  display: block;
+  margin-top: 20px;
+  color: #b3483a;
+  font-size: 22px;
+  line-height: 1.6;
+}
+
+.auth-sheet__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 90px;
+  margin-top: 34px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  box-shadow: 0 16px 34px rgba(138, 97, 40, 0.28);
+  color: #fffaf0;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 90px;
+
+  &::after {
+    border: none;
+  }
+
+  &[disabled] {
+    opacity: 0.72;
+  }
+}
+
+.auth-sheet__note {
+  display: block;
+  margin-top: 24px;
+  color: #a39a8e;
+  font-size: 21px;
+  line-height: 1.6;
+}
+
+.auth-sheet__mock {
+  display: block;
+  margin-top: 20px;
+  color: #a37632;
+  font-size: 21px;
+  text-decoration: underline;
+}
+
+/* ---------- 微信隐私授权弹窗 ----------
+   未同意《用户隐私保护指引》时，getPhoneNumber 会先触发隐私授权事件；
+   必须由 open-type=agreePrivacyAuthorization 的真实点击完成同意。 */
+.privacy-consent {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 56px;
+  background: rgba(24, 20, 15, 0.62);
+}
+
+.privacy-consent__panel {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 44px 40px 36px;
+  border: 1px solid rgba(163, 118, 50, 0.22);
+  border-radius: 28px;
+  background: #fffdf8;
+  box-shadow: 0 24px 60px rgba(52, 40, 24, 0.32);
+  text-align: center;
+}
+
+.privacy-consent__title {
+  display: block;
+  color: #2e271e;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.privacy-consent__content {
+  display: block;
+  margin-top: 22px;
+  color: #6f6558;
+  font-size: 24px;
+  line-height: 1.7;
+  text-align: left;
+}
+
+.privacy-consent__link {
+  color: #a37632;
+  text-decoration: underline;
+}
+
+.privacy-consent__actions {
+  display: flex;
+  margin-top: 34px;
+}
+
+.privacy-consent__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 84px;
+  margin: 0 10px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+
+  &::after {
+    border: none;
+  }
+}
+
+.privacy-consent__btn--ghost {
+  background: #f2ece2;
+  color: #7a6c5a;
+}
+
+.privacy-consent__btn--primary {
+  background: linear-gradient(135deg, #b18443, #8a6128);
+  box-shadow: 0 12px 26px rgba(138, 97, 40, 0.24);
+  color: #fffaf0;
+}
+
+@keyframes auth-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-sheet-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

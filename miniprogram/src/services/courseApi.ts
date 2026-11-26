@@ -39,7 +39,9 @@ export function getCourses(
   return request<PageResponse<CourseListItem>>({
     url: '/client/courses',
     method: 'GET',
-    params: buildListQuery(params)
+    params: buildListQuery(params),
+    // 课程广场 / 热门课程公开只读，避免本地过期 Token 把匿名浏览变成 401。
+    skipAuth: true
   })
 }
 

@@ -63,7 +63,7 @@ export default function PurchaseModal({
           disabled={paying}
           onClick={onConfirm}
         >
-          {paying ? '正在确认支付结果…' : `微信支付 ${formatPrice(amount)}`}
+          {paying ? '正在确认支付结果…' : `确认支付 ${formatPrice(amount)}`}
         </Button>
         <Button
           className='purchase-modal__cancel'

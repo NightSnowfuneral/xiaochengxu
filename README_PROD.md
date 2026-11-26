@@ -198,7 +198,7 @@ openssl crl2pkcs7 -nocrl -certfile deploy/nginx/certs/fullchain.pem \
 
 以下配置必须在微信公众平台/商户平台完成，代码仓库无法代劳：
 
-- 小程序：AppID、AppSecret、request 合法域名（`https://<域名>`）、业务域名（如需要）、隐私协议与用户信息授权；
+- 小程序：AppID、AppSecret、request 与 uploadFile 合法域名（均为 `https://<域名>`）、业务域名（如需要）、隐私协议与用户信息授权；
 - 微信支付：商户号与小程序 AppID 绑定、API v3 密钥、API 证书序列号、商户私钥、支付回调地址；
 - 回调地址必须与 `WECHAT_PAY_NOTIFY_URL` 完全一致，且公网 HTTPS 可达；
 - VOD 插件与 COS 权限/CORS 按 [docs/DEPLOY.md](docs/DEPLOY.md) 配置。

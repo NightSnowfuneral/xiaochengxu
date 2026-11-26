@@ -6,7 +6,10 @@ export default defineAppConfig({
     'pages/course-detail/index',
     'pages/payment-success/index',
     'pages/player/index',
-    'pages/profile/index'
+    'pages/orders/index',
+    'pages/order-detail/index',
+    'pages/profile/index',
+    'pages/appointment/index'
   ],
   window: {
     backgroundTextStyle: 'dark',

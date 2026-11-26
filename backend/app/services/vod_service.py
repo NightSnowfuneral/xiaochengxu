@@ -42,8 +42,12 @@ logger = logging.getLogger(__name__)
 _MIN_TTL_SECONDS = 60
 _VOD_API_HOST = "vod.tencentcloudapi.com"
 _VOD_API_ACTION = "DescribeMediaInfos"
+_VOD_SEARCH_ACTION = "SearchMedia"
 _VOD_API_VERSION = "2018-07-17"
 _VOD_API_TIMEOUT_SECONDS = 5.0
+# SearchMedia 单页上限 100，TotalCount / Offset 上限 5000。
+_VOD_SEARCH_PAGE_SIZE = 100
+_VOD_SEARCH_MAX_RESULTS = 5000
 _MEDIA_CACHE_TTL_SECONDS = 600
 _MEDIA_FAILURE_CACHE_TTL_SECONDS = 60
 # fileId -> (未签名播放地址, 时长秒数, monotonic 过期时间)
@@ -240,6 +244,15 @@ def _first_codec(stream_set: object) -> str:
     return ""
 
 
+def _first_video_stream(stream_set: object) -> dict[str, object]:
+    if not isinstance(stream_set, list):
+        return {}
+    for stream in stream_set:
+        if isinstance(stream, dict):
+            return stream
+    return {}
+
+
 def _is_https_url(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -256,17 +269,77 @@ def _is_h264(codec: str) -> bool:
     return codec in {"h264", "avc"}
 
 
-def _pick_play_url(media_info: dict[str, object]) -> str | None:
-    """从媒资信息中挑选最通用的播放地址。
+def _positive_int(value: object) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
-    优先级：H.264 MP4 转码 > 其它 MP4 > HEVC 原片 > 自适应 HLS。
-    小程序原生 video 组件对 H.264 MP4 支持最好；HLS 分片无法自动携带
-    Key 防盗链参数，因此放在最后；HEVC 在部分 Android 设备上无法解码，
-    也尽量靠后。
+
+def _play_candidate_metrics(
+    item: dict[str, object],
+) -> tuple[int, int]:
+    """返回候选地址的（码率 bps，文件大小 bytes）。
+
+    码率优先取转码记录的 Bitrate，其次取首条视频流，最后用大小/时长推算。
+    同一优先级内选择码率更低的转码，播放起速与倍速切换更稳定。
     """
 
-    # (优先级, URL)
-    candidates: list[tuple[int, str]] = []
+    bitrate = _positive_int(item.get("Bitrate"))
+    size = _positive_int(item.get("Size"))
+    if bitrate <= 0:
+        stream = _first_video_stream(item.get("VideoStreamSet"))
+        if isinstance(stream, dict):
+            bitrate = _positive_int(stream.get("Bitrate"))
+    if bitrate <= 0 and size > 0:
+        try:
+            duration = float(item.get("Duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 0:
+            bitrate = int(size * 8 / duration)
+    return bitrate, size
+
+
+def _is_original_definition(item: dict[str, object]) -> bool:
+    """腾讯云 TranscodeSet 中 Definition=0 表示未转码的原片。"""
+
+    return str(item.get("Definition", "")).strip() == "0"
+
+
+def _pick_play_url(media_info: dict[str, object]) -> str | None:
+    """从媒资信息中挑选最通用、最适合移动端播放的地址。
+
+    优先级：已转码的 H.264 MP4 > H.264 原片 MP4 > 其它 MP4 转码 >
+    其它原片 MP4 > 自适应 HLS。同一优先级内优先码率更低 / 体积更小的
+    版本：原片常见 3–14 Mbps，倍速播放时解码与带宽都容易跟不上，表现为
+    声音继续但画面卡住。HLS 分片无法自动携带 Key 防盗链参数，放在最后；
+    HEVC 在部分 Android 设备上无法解码，也尽量靠后。
+    """
+
+    # (优先级, 码率, 大小, URL)
+    candidates: list[tuple[int, int, int, str]] = []
+    seen: set[str] = set()
+    unknown = 10**18
+
+    def add_candidate(
+        priority: int,
+        item: dict[str, object],
+        url: str,
+    ) -> None:
+        if url in seen:
+            return
+        seen.add(url)
+        bitrate, size = _play_candidate_metrics(item)
+        candidates.append(
+            (
+                priority,
+                bitrate if bitrate > 0 else unknown,
+                size if size > 0 else unknown,
+                url,
+            )
+        )
 
     transcode = media_info.get("TranscodeInfo")
     if isinstance(transcode, dict):
@@ -280,13 +353,14 @@ def _pick_play_url(media_info: dict[str, object]) -> str | None:
                     continue
                 codec = _first_codec(item.get("VideoStreamSet"))
                 url_str = str(url)
+                original = _is_original_definition(item)
                 if _is_h264(codec) and _is_mp4_url(url_str):
-                    priority = 0
+                    priority = 1 if original else 0
                 elif _is_mp4_url(url_str):
-                    priority = 2
+                    priority = 3 if original else 2
                 else:
-                    priority = 3
-                candidates.append((priority, url_str))
+                    priority = 4
+                add_candidate(priority, item, url_str)
 
     basic = media_info.get("BasicInfo")
     if isinstance(basic, dict) and _is_https_url(basic.get("MediaUrl")):
@@ -298,9 +372,13 @@ def _pick_play_url(media_info: dict[str, object]) -> str | None:
         )
         url_str = str(basic["MediaUrl"])
         priority = (
-            1 if _is_h264(basic_codec) and _is_mp4_url(url_str) else 4
+            1 if _is_h264(basic_codec) and _is_mp4_url(url_str) else 3
         )
-        candidates.append((priority, url_str))
+        add_candidate(
+            priority,
+            meta_data if isinstance(meta_data, dict) else {},
+            url_str,
+        )
 
     adaptive = media_info.get("AdaptiveDynamicStreamingInfo")
     if isinstance(adaptive, dict):
@@ -308,12 +386,12 @@ def _pick_play_url(media_info: dict[str, object]) -> str | None:
         if isinstance(stream_set, list):
             for item in stream_set:
                 if isinstance(item, dict) and _is_https_url(item.get("Url")):
-                    candidates.append((5, str(item["Url"])))
+                    add_candidate(4, item, str(item["Url"]))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return candidates[0][3]
 
 
 def _extract_duration(media_info: dict[str, object] | None) -> int:
@@ -444,6 +522,107 @@ async def describe_media_batch(
             if isinstance(file_id, str) and file_id in chunk:
                 result[file_id] = item
     return result
+
+
+async def search_all_remote_videos() -> list[dict[str, object]]:
+    """拉取 VOD 应用内的全部视频（按创建时间倒序）。
+
+    SearchMedia 使用 Offset / Limit 分页，单页最多 100 条，TotalCount 与
+    Offset + Limit 上限均为 5000；超过部分接口无法翻页，只记录告警并
+    返回前 5000 条。返回字段仅保留后台视频库需要的元数据，不返回播放
+    地址与任何密钥。
+
+    所有 VOD 侧错误统一转换为可读的 BusinessException，日志只记录异常
+    类型与 VOD 错误码，不打印请求头或密钥。
+    """
+
+    app_id = settings.vod_app_id
+    collected: list[dict[str, object]] = []
+    offset = 0
+    total = 0
+
+    while offset < _VOD_SEARCH_MAX_RESULTS:
+        payload: dict[str, object] = {
+            "Categories": ["Video"],
+            "Offset": offset,
+            "Limit": _VOD_SEARCH_PAGE_SIZE,
+            "Sort": {"Field": "CreateTime", "Order": "Desc"},
+        }
+        if app_id is not None:
+            payload["SubAppId"] = app_id
+
+        try:
+            data = await _request_vod_api(_VOD_SEARCH_ACTION, payload)
+        except BusinessException:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning(
+                "VOD SearchMedia 调用失败 offset=%s: %s: %s",
+                offset,
+                type(exc).__name__,
+                exc,
+            )
+            raise BusinessException(
+                "获取腾讯云视频列表失败，请稍后重试",
+                code="VOD_LIST_FAILED",
+                status_code=502,
+            ) from exc
+
+        try:
+            total = max(0, int(data.get("TotalCount") or 0))
+        except (TypeError, ValueError):
+            total = 0
+
+        media_set = data.get("MediaInfoSet")
+        page_items = media_set if isinstance(media_set, list) else []
+        for item in page_items:
+            if not isinstance(item, dict):
+                continue
+            file_id = str(item.get("FileId") or "").strip()
+            if not file_id:
+                continue
+            basic = item.get("BasicInfo")
+            basic = basic if isinstance(basic, dict) else {}
+            name = str(basic.get("Name") or "").strip()
+            cover_url = str(basic.get("CoverUrl") or "").strip()
+            created_at = str(basic.get("CreateTime") or "").strip()
+            collected.append(
+                {
+                    "file_id": file_id,
+                    "video_name": name,
+                    "duration_seconds": _extract_duration(item),
+                    "cover_url": cover_url or None,
+                    "remote_created_at": created_at or None,
+                }
+            )
+
+        if (
+            not page_items
+            or total <= 0
+            or len(collected) >= total
+            or len(page_items) < _VOD_SEARCH_PAGE_SIZE
+        ):
+            break
+        offset += _VOD_SEARCH_PAGE_SIZE
+
+    if total > _VOD_SEARCH_MAX_RESULTS:
+        logger.warning(
+            "VOD 视频总数 %s 超过 SearchMedia 上限 %s，仅返回前 %s 条",
+            total,
+            _VOD_SEARCH_MAX_RESULTS,
+            _VOD_SEARCH_MAX_RESULTS,
+        )
+
+    # 翻页期间若有新视频写入，可能导致同一条出现在相邻两页；按 FileId 去重。
+    unique: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in collected:
+        file_id = str(item.get("file_id") or "")
+        if not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+        unique.append(item)
+    return unique
 
 
 async def _describe_media(file_id: str, app_id: int) -> dict[str, object] | None:
@@ -581,4 +760,5 @@ __all__ = [
     "get_media_duration",
     "resolve_playback_media",
     "resolve_play_url",
+    "search_all_remote_videos",
 ]

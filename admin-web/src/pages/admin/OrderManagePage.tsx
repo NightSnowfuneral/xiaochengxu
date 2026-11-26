@@ -519,6 +519,14 @@ export default function OrderManagePage() {
                   }（#${selectedOrder.course_id}）`
                 },
                 {
+                  key: 'appointment_quota',
+                  label: '赠送指导预约',
+                  children:
+                    selectedOrder.appointment_quota_count > 0
+                      ? `${selectedOrder.appointment_quota_count} 次`
+                      : '无'
+                },
+                {
                   key: 'amount',
                   label: '订单金额',
                   children: (

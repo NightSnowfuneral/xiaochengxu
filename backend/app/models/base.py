@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -60,6 +60,38 @@ class TimestampMixin(CreatedAtMixin, UpdatedAtMixin):
     """同时包含创建时间与更新时间。"""
 
 
+def utc_now_default() -> datetime:
+    """应用层写入的 UTC naive 时间。
+
+    预约相关表不使用 MySQL `CURRENT_TIMESTAMP`：数据库容器时区为
+    Asia/Shanghai，而前端按 UTC 换算展示，混用会导致同一行内 created_at
+    比 completed_at 快 8 小时。改为应用层统一写入 UTC。
+    """
+
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class UtcCreatedAtMixin:
+    """仅包含创建时间，由应用层写入 UTC。"""
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now_default,
+    )
+
+
+class UtcTimestampMixin(UtcCreatedAtMixin):
+    """创建时间与更新时间均由应用层写入 UTC。"""
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now_default,
+        onupdate=utc_now_default,
+    )
+
+
 __all__ = [
     "Base",
     "CreatedAtMixin",
@@ -67,4 +99,7 @@ __all__ = [
     "NAMING_CONVENTION",
     "TimestampMixin",
     "UpdatedAtMixin",
+    "UtcCreatedAtMixin",
+    "UtcTimestampMixin",
+    "utc_now_default",
 ]

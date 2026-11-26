@@ -17,7 +17,7 @@ import logging
 import re
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +28,9 @@ from ..core.exception import (
 )
 from ..models import (
     AdminUser,
+    AppointmentQuotaSource,
     Course,
+    GiftLog,
     User,
     UserCourse,
     UserCourseAction,
@@ -41,11 +43,19 @@ from ..schemas import (
     AdminRevokeCourseRequest,
     AdminRevokeCourseResponse,
     AdminUserCourseItem,
+    AdminUserCourseLogItem,
+    AdminUserCourseLogQuery,
     AdminUserCourseSource,
+    AdminUserListItem,
     AdminUserSummary,
     PageResponse,
 )
-from . import course_service, user_course_service, user_service
+from . import (
+    appointment_service,
+    course_service,
+    user_course_service,
+    user_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +142,103 @@ async def lookup_user(session: AsyncSession, keyword: str) -> AdminUserSummary:
     )
 
 
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符，避免 `%` / `_` 被当成模糊匹配语法。"""
+
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+async def search_users(
+    session: AsyncSession,
+    *,
+    keyword: str,
+    page: int,
+    page_size: int,
+) -> PageResponse[AdminUserListItem]:
+    """按手机号片段、昵称片段或用户 ID 模糊搜索用户。
+
+    结果附带已拥有课程数，供后台列表直接展示并发起赠课 / 课程管理。
+    手机号与昵称均使用包含匹配，输入中的 `%` / `_` 会被转义。
+    """
+
+    value = keyword.strip()
+    if not value:
+        raise BusinessException(
+            "请输入手机号、昵称片段或用户 ID",
+            code="INVALID_USER_KEYWORD",
+            status_code=400,
+        )
+
+    escaped = _escape_like(value)
+    pattern = f"%{escaped}%"
+    conditions = [
+        User.mobile.like(pattern, escape="\\"),
+        User.nickname.like(pattern, escape="\\"),
+    ]
+    if value.isdigit() and 0 < len(value) <= 18:
+        conditions.append(User.id == int(value))
+
+    owned_courses = (
+        select(
+            UserCourse.user_id.label("user_id"),
+            func.count().label("owned_course_count"),
+        )
+        .group_by(UserCourse.user_id)
+        .subquery()
+    )
+
+    total = await session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(or_(*conditions))
+    )
+
+    # 精确 / 前缀命中优先，其余按用户注册先后倒序，便于常用手机号置顶。
+    priority = case(
+        (User.mobile == value, 0),
+        (User.mobile.like(f"{escaped}%", escape="\\"), 1),
+        (User.nickname == value, 0),
+        (User.nickname.like(f"{escaped}%", escape="\\"), 1),
+        else_=2,
+    )
+
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 100))
+    rows = (
+        await session.execute(
+            select(
+                User,
+                func.coalesce(owned_courses.c.owned_course_count, 0),
+            )
+            .outerjoin(owned_courses, owned_courses.c.user_id == User.id)
+            .where(or_(*conditions))
+            .order_by(priority, User.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    return PageResponse[AdminUserListItem](
+        items=[
+            AdminUserListItem(
+                user_id=user.id,
+                nickname=user.nickname,
+                mobile=user.mobile,
+                avatar_url=user.avatar_url,
+                owned_course_count=int(count or 0),
+            )
+            for user, count in rows
+        ],
+        total=int(total or 0),
+        page=page,
+        page_size=page_size,
+    )
+
+
 async def list_user_courses(
     session: AsyncSession,
     *,
@@ -196,15 +303,19 @@ async def _apply_grant(
     *,
     admin_id: int,
     user_id: int,
+    mobile: str | None,
     course_id: int,
     valid_start_at: datetime,
     expire_time: datetime,
     valid_days: int,
+    appointment_quota_count: int,
 ) -> tuple[UserCourseAction, UserCourseLog]:
     """在事务内写入或重置授权，并生成操作日志。
 
     已拥有时仅更新有效期与来源，不新增 user_courses 行；联合唯一约束
-    仍是并发场景下的最后一道防线。
+    仍是并发场景下的最后一道防线。首次赠送同时写 gift_logs，保证
+    「赠课管理」的赠课日志能看到本入口的赠课；重置/收回只进
+    user_course_logs 操作日志，不伪装成新增赠课。
     """
 
     access = await session.scalar(
@@ -223,13 +334,23 @@ async def _apply_grant(
             source=UserCourseSource.GIFT,
             valid_start_at=valid_start_at,
             valid_end_at=expire_time,
+            appointment_quota_count=appointment_quota_count,
         )
         session.add(access)
+        session.add(
+            GiftLog(
+                admin_id=admin_id,
+                mobile=(mobile or "").strip(),
+                user_id=user_id,
+                course_id=course_id,
+            )
+        )
         action = UserCourseAction.GIFT
     else:
         access.source = UserCourseSource.GIFT
         access.valid_start_at = valid_start_at
         access.valid_end_at = expire_time
+        access.appointment_quota_count = appointment_quota_count
         action = UserCourseAction.RESET
 
     log = UserCourseLog(
@@ -258,12 +379,13 @@ async def grant_course(
     """
 
     await _ensure_admin(session, admin_id)
-    await user_service.get_user_model(session, payload.user_id)
+    user = await user_service.get_user_model(session, payload.user_id)
     course = await course_service.get_course_model(
         session,
         payload.course_id,
     )
     course_id = course.id
+    appointment_quota = int(course.appointment_quota)
 
     valid_start_at = user_course_service.utc_now()
     expire_time = user_course_service.add_validity_days(
@@ -276,12 +398,24 @@ async def grant_course(
             session,
             admin_id=admin_id,
             user_id=payload.user_id,
+            mobile=user.mobile,
             course_id=course_id,
             valid_start_at=valid_start_at,
             expire_time=expire_time,
             valid_days=payload.valid_days,
+            appointment_quota_count=appointment_quota,
         )
         log_id = log.id
+        if appointment_quota > 0:
+            await appointment_service.grant_quota_count(
+                session,
+                user_id=payload.user_id,
+                count=appointment_quota,
+                source=AppointmentQuotaSource.ADMIN,
+                biz_no=f"UC{log_id}",
+                operator_id=admin_id,
+                remark="后台赠课赠送",
+            )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -290,12 +424,24 @@ async def grant_course(
                 session,
                 admin_id=admin_id,
                 user_id=payload.user_id,
+                mobile=user.mobile,
                 course_id=course_id,
                 valid_start_at=valid_start_at,
                 expire_time=expire_time,
                 valid_days=payload.valid_days,
+                appointment_quota_count=appointment_quota,
             )
             log_id = log.id
+            if appointment_quota > 0:
+                await appointment_service.grant_quota_count(
+                    session,
+                    user_id=payload.user_id,
+                    count=appointment_quota,
+                    source=AppointmentQuotaSource.ADMIN,
+                    biz_no=f"UC{log_id}",
+                    operator_id=admin_id,
+                    remark="后台赠课赠送",
+                )
             await session.commit()
         except IntegrityError:
             await session.rollback()
@@ -395,9 +541,83 @@ async def revoke_course(
     )
 
 
+async def list_user_course_logs(
+    session: AsyncSession,
+    query: AdminUserCourseLogQuery,
+) -> PageResponse[AdminUserCourseLogItem]:
+    """后台分页查询用户课程操作日志（赠课 / 重置 / 收回）。"""
+
+    conditions: list[object] = []
+    if query.user_id is not None:
+        conditions.append(UserCourseLog.user_id == query.user_id)
+    if query.course_id is not None:
+        conditions.append(UserCourseLog.course_id == query.course_id)
+    if query.admin_id is not None:
+        conditions.append(UserCourseLog.admin_id == query.admin_id)
+    if query.action is not None:
+        conditions.append(UserCourseLog.action == query.action)
+
+    page = max(1, int(query.page))
+    page_size = max(1, min(int(query.page_size), 100))
+    offset = (page - 1) * page_size
+
+    total = await session.scalar(
+        select(func.count())
+        .select_from(UserCourseLog)
+        .where(*conditions)
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                UserCourseLog,
+                AdminUser.username,
+                User.nickname,
+                User.mobile,
+                Course.title,
+            )
+            .join(AdminUser, AdminUser.id == UserCourseLog.admin_id)
+            .join(User, User.id == UserCourseLog.user_id)
+            .join(Course, Course.id == UserCourseLog.course_id)
+            .where(*conditions)
+            .order_by(
+                UserCourseLog.created_at.desc(),
+                UserCourseLog.id.desc(),
+            )
+            .offset(offset)
+            .limit(page_size)
+        )
+    ).all()
+
+    return PageResponse[AdminUserCourseLogItem](
+        items=[
+            AdminUserCourseLogItem(
+                id=log.id,
+                admin_id=log.admin_id,
+                admin_username=admin_username,
+                user_id=log.user_id,
+                user_nickname=nickname,
+                user_mobile=mobile,
+                course_id=log.course_id,
+                course_title=course_title,
+                action=log.action,
+                valid_days=log.valid_days,
+                expire_time=log.expire_time,
+                created_at=log.created_at,
+            )
+            for log, admin_username, nickname, mobile, course_title in rows
+        ],
+        total=int(total or 0),
+        page=page,
+        page_size=page_size,
+    )
+
+
 __all__ = [
     "grant_course",
+    "list_user_course_logs",
     "list_user_courses",
     "lookup_user",
     "revoke_course",
+    "search_users",
 ]

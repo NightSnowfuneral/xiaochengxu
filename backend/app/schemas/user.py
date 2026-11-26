@@ -63,18 +63,7 @@ class ProfileUpdateRequest(RequestSchema):
         return value
 
 
-class MobileBindRequest(RequestSchema):
-    """手机号绑定入参。
-
-    code 为 `getPhoneNumber` 返回的动态令牌，由后端调用微信接口换取手机号；
-    前端不得自行上传明文手机号。
-    """
-
-    code: str = Field(min_length=1, max_length=128)
-
-
 __all__ = [
-    "MobileBindRequest",
     "ProfileUpdateRequest",
     "UserBrief",
     "UserResponse",

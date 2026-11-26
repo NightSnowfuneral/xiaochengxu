@@ -267,6 +267,120 @@
   font-size: 21px;
 }
 
+.profile-appointment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 32px;
+  padding: 28px 30px;
+  border: 1px solid rgba(163, 118, 50, 0.16);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 10px 28px rgba(45, 35, 22, 0.06);
+}
+
+.profile-appointment__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-appointment__title {
+  display: block;
+  color: #b08a4a;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 4px;
+}
+
+.profile-appointment__body {
+  display: flex;
+  align-items: baseline;
+  margin-top: 12px;
+}
+
+.profile-appointment__value {
+  color: #3a3126;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.profile-appointment__unit {
+  margin-left: 8px;
+  color: #8c8377;
+  font-size: 22px;
+}
+
+.profile-appointment__button {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  margin-left: 24px;
+  padding: 0 28px;
+  border: 1px solid rgba(163, 118, 50, 0.28);
+  border-radius: 999px;
+  background: rgba(163, 118, 50, 0.08);
+  color: #a37632;
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: 1px;
+}
+
+.profile-orders-entry {
+  margin-top: 24px;
+}
+
+.profile-entry {
+  display: flex;
+  align-items: center;
+  padding: 26px 28px;
+  border: 1px solid rgba(163, 118, 50, 0.16);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 10px 28px rgba(45, 35, 22, 0.06);
+}
+
+.profile-entry__badge {
+  display: block;
+  flex: 0 0 auto;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+}
+
+.profile-entry__main {
+  flex: 1;
+  min-width: 0;
+  margin-left: 22px;
+}
+
+.profile-entry__title {
+  display: block;
+  color: #2b251d;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.profile-entry__subtitle {
+  display: block;
+  margin-top: 6px;
+  color: #9b8d7d;
+  font-size: 21px;
+}
+
+.profile-entry__arrow {
+  flex: 0 0 auto;
+  margin-left: 16px;
+  color: #b08a4a;
+  font-size: 34px;
+  line-height: 1;
+}
+
 .profile-courses {
   margin-top: 48px;
 }

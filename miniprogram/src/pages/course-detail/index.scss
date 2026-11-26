@@ -130,6 +130,40 @@
   font-size: 20px;
 }
 
+.course-detail__quota {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24px;
+  padding: 22px 26px;
+  border: 1px solid rgba(163, 118, 50, 0.16);
+  border-radius: 22px;
+  background: linear-gradient(135deg, #fffaf0, #f7eddd);
+}
+
+.course-detail__quota-main {
+  display: flex;
+  align-items: baseline;
+}
+
+.course-detail__quota-label {
+  color: #5f5346;
+  font-size: 24px;
+}
+
+.course-detail__quota-value {
+  margin-left: 10px;
+  color: #a37632;
+  font-family: 'Songti SC', 'STSong', serif;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.course-detail__quota-action {
+  color: #8a6128;
+  font-size: 23px;
+}
+
 .course-detail__section {
   margin-top: 48px;
 }

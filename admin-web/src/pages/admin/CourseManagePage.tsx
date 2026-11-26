@@ -11,9 +11,11 @@ import {
   Form,
   Image,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
   Row,
+  Select,
   Space,
   Switch,
   Table,
@@ -26,15 +28,17 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { getErrorMessage } from '../../api/request'
 import AdminImageUpload from '../../components/admin/ImageUpload'
 import AdminPageHeader from '../../components/admin/PageHeader'
+import { CourseStatusTag } from '../../components/admin/StatusTags'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import {
+  changeCourseStatus,
   createCourse,
   deleteCourse,
   fetchCourses,
   selectCourseManage,
   updateCourse
 } from '../../store/slices/courseManageSlice'
-import type { Course, CourseCreatePayload } from '../../types'
+import type { Course, CourseCreatePayload, CourseStatus } from '../../types'
 import {
   centsToYuanInput,
   formatDateTime,
@@ -45,7 +49,15 @@ import { isHttpUrl } from '../../utils/validation'
 
 interface CourseFilterValues {
   keyword?: string
+  status?: CourseStatus | 'all'
 }
+
+const COURSE_STATUS_OPTIONS: { value: CourseStatus | 'all'; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'draft', label: '草稿' },
+  { value: 'published', label: '已上架' },
+  { value: 'offline', label: '已下架' }
+]
 
 interface CourseFormValues {
   title: string
@@ -56,6 +68,7 @@ interface CourseFormValues {
   cover_small: string
   icon_url: string
   is_hot_topic: boolean
+  appointment_quota: number
 }
 
 const EMPTY_COURSE_FORM: CourseFormValues = {
@@ -66,7 +79,31 @@ const EMPTY_COURSE_FORM: CourseFormValues = {
   cover_big: '',
   cover_small: '',
   icon_url: '',
-  is_hot_topic: false
+  is_hot_topic: false,
+  appointment_quota: 0
+}
+
+interface CourseImageSpecProps {
+  size: string
+  ratio: string
+}
+
+/** 课程图片的紧凑规格提示，避免长句在窄列中折行。 */
+function CourseImageSpec({ size, ratio }: CourseImageSpecProps) {
+  return (
+    <div className="course-image-spec">
+      <div className="course-image-spec__row">
+        <span className="course-image-spec__label">尺寸</span>
+        <span className="course-image-spec__value">
+          {size} px · {ratio}
+        </span>
+      </div>
+      <div className="course-image-spec__row">
+        <span className="course-image-spec__label">格式</span>
+        <span className="course-image-spec__value">JPG/PNG/WebP · ≤10MB</span>
+      </div>
+    </div>
+  )
 }
 
 function toFormValues(course: Course | null): CourseFormValues {
@@ -81,7 +118,8 @@ function toFormValues(course: Course | null): CourseFormValues {
     cover_big: course.cover_big,
     cover_small: course.cover_small,
     icon_url: course.icon_url,
-    is_hot_topic: course.is_hot_topic
+    is_hot_topic: course.is_hot_topic,
+    appointment_quota: course.appointment_quota ?? 0
   }
 }
 
@@ -99,10 +137,12 @@ export default function CourseManagePage() {
     pageSize,
     keyword: appliedKeyword,
     hotOnly: appliedHotOnly,
+    statusFilter: appliedStatus,
     loading,
     error,
     saving,
-    deletingId
+    deletingId,
+    statusChangingId
   } = useAppSelector(selectCourseManage)
 
   const [formOpen, setFormOpen] = useState(false)
@@ -113,20 +153,23 @@ export default function CourseManagePage() {
     nextPage: number,
     nextPageSize = pageSize,
     nextKeyword = appliedKeyword,
-    nextHotOnly = appliedHotOnly
+    nextHotOnly = appliedHotOnly,
+    nextStatus: CourseStatus | 'all' = appliedStatus
   ) => {
     void dispatch(
       fetchCourses({
         page: nextPage,
         pageSize: nextPageSize,
         keyword: nextKeyword,
-        hotOnly: nextHotOnly
+        hotOnly: nextHotOnly,
+        // 「全部」不传 status，避免后端收到无法解析的枚举值。
+        status: nextStatus === 'all' ? undefined : nextStatus
       })
     )
   }
 
   useEffect(() => {
-    load(1, 20, '', false)
+    load(1, 20, '', false, 'all')
     // 首次进入加载默认列表。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch])
@@ -161,7 +204,8 @@ export default function CourseManagePage() {
       cover_big: values.cover_big.trim(),
       cover_small: values.cover_small.trim(),
       icon_url: values.icon_url.trim(),
-      is_hot_topic: Boolean(values.is_hot_topic)
+      is_hot_topic: Boolean(values.is_hot_topic),
+      appointment_quota: values.appointment_quota ?? 0
     }
 
     try {
@@ -172,11 +216,17 @@ export default function CourseManagePage() {
         message.success('课程已更新')
       } else {
         await dispatch(createCourse(payload)).unwrap()
-        message.success('课程已创建，可继续添加课时')
+        message.success('课程已创建（草稿），上架后小程序可见')
       }
       setFormOpen(false)
       setEditingCourse(null)
-      load(editingCourse ? page : 1, pageSize, appliedKeyword, appliedHotOnly)
+      load(
+        editingCourse ? page : 1,
+        pageSize,
+        appliedKeyword,
+        appliedHotOnly,
+        appliedStatus
+      )
     } catch (saveError) {
       message.error(getErrorMessage(saveError))
     }
@@ -191,7 +241,7 @@ export default function CourseManagePage() {
         })
       ).unwrap()
       message.success(checked ? '已加入首页热门' : '已取消首页热门')
-      load(page, pageSize, appliedKeyword, appliedHotOnly)
+      load(page, pageSize, appliedKeyword, appliedHotOnly, appliedStatus)
     } catch (toggleError) {
       message.error(getErrorMessage(toggleError))
     }
@@ -202,9 +252,37 @@ export default function CourseManagePage() {
       await dispatch(deleteCourse(course.id)).unwrap()
       message.success(`课程「${course.title}」已删除`)
       const nextPage = items.length === 1 && page > 1 ? page - 1 : page
-      load(nextPage, pageSize, appliedKeyword, appliedHotOnly)
+      load(nextPage, pageSize, appliedKeyword, appliedHotOnly, appliedStatus)
     } catch (deleteError) {
       message.error(getErrorMessage(deleteError))
+    }
+  }
+
+  const handleStatusChange = async (
+    course: Course,
+    targetStatus: CourseStatus
+  ) => {
+    try {
+      await dispatch(
+        changeCourseStatus({ id: course.id, status: targetStatus })
+      ).unwrap()
+      message.success(
+        targetStatus === 'published' ? '课程已上架' : '课程已下架'
+      )
+      // 当前筛选不再匹配新状态且是当页最后一条时，回退一页。
+      const stillVisible =
+        appliedStatus === 'all' || appliedStatus === targetStatus
+      const nextPage =
+        !stillVisible && items.length === 1 && page > 1 ? page - 1 : page
+      load(
+        nextPage,
+        pageSize,
+        appliedKeyword,
+        appliedHotOnly,
+        appliedStatus
+      )
+    } catch (statusError) {
+      message.error(getErrorMessage(statusError))
     }
   }
 
@@ -260,14 +338,11 @@ export default function CourseManagePage() {
       )
     },
     {
-      title: '上架',
-      key: 'published',
+      title: '课程状态',
+      dataIndex: 'status',
+      key: 'status',
       width: 90,
-      render: () => (
-        <Tooltip title="课程创建后即上架；当前数据模型没有下架字段">
-          <Switch size="small" checked disabled />
-        </Tooltip>
-      )
+      render: (value: CourseStatus) => <CourseStatusTag status={value} />
     },
     {
       title: '热门',
@@ -297,34 +372,71 @@ export default function CourseManagePage() {
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 220,
       fixed: 'right',
-      render: (_value, course) => (
-        <Space size={4}>
-          <Button type="link" size="small" onClick={() => openEdit(course)}>
-            编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/lessons?courseId=${course.id}`)}
-          >
-            课时
-          </Button>
-          <Popconfirm
-            title="删除课程？"
-            description="删除后不可恢复；存在课时、订单或授权记录时后端会拒绝删除。"
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true, loading: deletingId === course.id }}
-            onConfirm={() => handleDelete(course)}
-          >
-            <Button type="link" size="small" danger disabled={deletingId !== null}>
-              删除
+      render: (_value, course) => {
+        const targetStatus: CourseStatus =
+          course.status === 'published' ? 'offline' : 'published'
+        const isPublishing = targetStatus === 'published'
+        return (
+          <Space size={4}>
+            <Popconfirm
+              title={
+                isPublishing ? '确定上架该课程？' : '确定下架该课程？'
+              }
+              description={
+                isPublishing
+                  ? '上架后小程序端用户可正常看到并购买'
+                  : '下架后小程序端不再展示该课程，已购买用户权益不受影响'
+              }
+              okText={isPublishing ? '上架' : '下架'}
+              cancelText="取消"
+              okButtonProps={{
+                loading: statusChangingId === course.id
+              }}
+              onConfirm={() => handleStatusChange(course, targetStatus)}
+            >
+              <Button
+                type="link"
+                size="small"
+                disabled={statusChangingId !== null}
+              >
+                {isPublishing ? '上架' : '下架'}
+              </Button>
+            </Popconfirm>
+            <Button type="link" size="small" onClick={() => openEdit(course)}>
+              编辑
             </Button>
-          </Popconfirm>
-        </Space>
-      )
+            <Button
+              type="link"
+              size="small"
+              onClick={() => navigate(`/lessons?courseId=${course.id}`)}
+            >
+              课时
+            </Button>
+            <Popconfirm
+              title="删除课程？"
+              description="删除后不可恢复；存在课时、订单或授权记录时后端会拒绝删除。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{
+                danger: true,
+                loading: deletingId === course.id
+              }}
+              onConfirm={() => handleDelete(course)}
+            >
+              <Button
+                type="link"
+                size="small"
+                danger
+                disabled={deletingId !== null || statusChangingId !== null}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        )
+      }
     }
   ]
 
@@ -338,7 +450,15 @@ export default function CourseManagePage() {
           <>
             <Button
               icon={<ReloadOutlined />}
-              onClick={() => load(page, pageSize)}
+              onClick={() =>
+                load(
+                  page,
+                  pageSize,
+                  appliedKeyword,
+                  appliedHotOnly,
+                  appliedStatus
+                )
+              }
               loading={loading}
             >
               刷新
@@ -354,9 +474,15 @@ export default function CourseManagePage() {
         <Form<CourseFilterValues>
           form={filterForm}
           layout="inline"
-          initialValues={{ keyword: '' }}
+          initialValues={{ keyword: '', status: 'all' }}
           onFinish={(values) =>
-            load(1, pageSize, values.keyword?.trim() ?? '', hotOnlyInput)
+            load(
+              1,
+              pageSize,
+              values.keyword?.trim() ?? '',
+              hotOnlyInput,
+              values.status ?? 'all'
+            )
           }
           style={{ rowGap: 12 }}
         >
@@ -372,6 +498,12 @@ export default function CourseManagePage() {
               style={{ width: '100%' }}
             />
           </Form.Item>
+          <Form.Item name="status" label="课程状态" style={{ minWidth: 180 }}>
+            <Select
+              options={COURSE_STATUS_OPTIONS}
+              style={{ width: 140 }}
+            />
+          </Form.Item>
           <Form.Item>
             <Space>
               <Button type="primary" htmlType="submit" loading={loading}>
@@ -381,7 +513,7 @@ export default function CourseManagePage() {
                 onClick={() => {
                   filterForm.resetFields()
                   setHotOnlyInput(false)
-                  load(1, pageSize, '', false)
+                  load(1, pageSize, '', false, 'all')
                 }}
               >
                 重置
@@ -423,7 +555,18 @@ export default function CourseManagePage() {
           message="课程列表加载失败"
           description={error}
           action={
-            <Button size="small" onClick={() => load(page, pageSize)}>
+            <Button
+              size="small"
+              onClick={() =>
+                load(
+                  page,
+                  pageSize,
+                  appliedKeyword,
+                  appliedHotOnly,
+                  appliedStatus
+                )
+              }
+            >
               重试
             </Button>
           }
@@ -436,7 +579,7 @@ export default function CourseManagePage() {
           columns={columns}
           dataSource={items}
           loading={loading}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1140 }}
           title={() => (
             <Space size={8} wrap>
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -450,6 +593,16 @@ export default function CourseManagePage() {
               {appliedHotOnly ? (
                 <Typography.Text style={{ fontSize: 12, color: '#a47436' }}>
                   · 仅热门
+                </Typography.Text>
+              ) : null}
+              {appliedStatus !== 'all' ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  ·{' '}
+                  {
+                    COURSE_STATUS_OPTIONS.find(
+                      (option) => option.value === appliedStatus
+                    )?.label
+                  }
                 </Typography.Text>
               ) : null}
             </Space>
@@ -467,7 +620,13 @@ export default function CourseManagePage() {
             pageSizeOptions: ['10', '20', '50'],
             showTotal: (count) => `共 ${count} 门`,
             onChange: (nextPage, nextPageSize) =>
-              load(nextPage, nextPageSize, appliedKeyword, appliedHotOnly)
+              load(
+                nextPage,
+                nextPageSize,
+                appliedKeyword,
+                appliedHotOnly,
+                appliedStatus
+              )
           }}
         />
       </Card>
@@ -475,7 +634,7 @@ export default function CourseManagePage() {
       <Modal
         open={formOpen}
         title={editingCourse ? '编辑课程' : '新增课程'}
-        width={580}
+        width={640}
         okText="保存课程"
         cancelText="取消"
         confirmLoading={saving}
@@ -543,7 +702,7 @@ export default function CourseManagePage() {
           </Divider>
 
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item
                 name="priceYuan"
                 label="课程价格（元）"
@@ -563,7 +722,30 @@ export default function CourseManagePage() {
                 <Input prefix="¥" placeholder="0.00" inputMode="decimal" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
+              <Form.Item
+                name="appointment_quota"
+                label="赠送指导预约次数"
+                extra="购买或获赠该课程时自动发放到学员预约次数账户"
+                rules={[
+                  {
+                    type: 'number',
+                    min: 0,
+                    max: 1000,
+                    message: '赠送次数需为 0-1000 的整数'
+                  }
+                ]}
+              >
+                <InputNumber
+                  min={0}
+                  max={1000}
+                  precision={0}
+                  placeholder="0"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
               <Form.Item
                 name="is_hot_topic"
                 label="首页热门"
@@ -583,6 +765,7 @@ export default function CourseManagePage() {
               <Form.Item
                 name="cover_big"
                 label="封面大图"
+                extra={<CourseImageSpec size="1125 × 750" ratio="3:2" />}
                 rules={[
                   { required: true, message: '请上传封面大图' },
                   {
@@ -602,6 +785,7 @@ export default function CourseManagePage() {
               <Form.Item
                 name="cover_small"
                 label="列表封面"
+                extra={<CourseImageSpec size="900 × 600" ratio="3:2" />}
                 rules={[
                   { required: true, message: '请上传列表封面' },
                   {
@@ -621,6 +805,7 @@ export default function CourseManagePage() {
               <Form.Item
                 name="icon_url"
                 label="课程图标"
+                extra={<CourseImageSpec size="300 × 300" ratio="1:1" />}
                 rules={[
                   { required: true, message: '请上传课程图标' },
                   {

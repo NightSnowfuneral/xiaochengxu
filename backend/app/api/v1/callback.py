@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from ...core.exception import BusinessException
 from ...schemas import WeChatPayNotifyResponse
 from ...services import pay_service
-from ..deps import DbSession
+from ..deps import DbSession, RedisDep
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ router = APIRouter(prefix="/payments/wechat", tags=["payment-callback"])
 async def wechat_pay_notify(
     request: Request,
     session: DbSession,
+    redis: RedisDep,
 ) -> WeChatPayNotifyResponse | JSONResponse:
     body = await request.body()
     # 回调密文本身不含明文密钥；完整记录便于对账与排查。
@@ -46,6 +47,7 @@ async def wechat_pay_notify(
             session,
             headers=request.headers,
             body=body,
+            redis=redis,
         )
     except BusinessException as exc:
         if exc.status_code >= 500:

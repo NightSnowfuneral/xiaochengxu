@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="42%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#4b4032"/>
+      <stop offset="52%" stop-color="#382f26"/>
+      <stop offset="100%" stop-color="#2b241d"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#b08a4a" stop-opacity=".22"/>
+      <stop offset="70%" stop-color="#b08a4a" stop-opacity=".06"/>
+      <stop offset="100%" stop-color="#b08a4a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d9b77c" stop-opacity=".82"/>
+      <stop offset="48%" stop-color="#b08a4a" stop-opacity=".58"/>
+      <stop offset="100%" stop-color="#8a6128" stop-opacity=".7"/>
+    </linearGradient>
+    <linearGradient id="goldBack" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#cba362"/>
+      <stop offset="55%" stop-color="#a97d3f"/>
+      <stop offset="100%" stop-color="#8a6128"/>
+    </linearGradient>
+    <linearGradient id="goldMid" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d6b071"/>
+      <stop offset="52%" stop-color="#b08a4a"/>
+      <stop offset="100%" stop-color="#8c632b"/>
+    </linearGradient>
+    <linearGradient id="goldFront" x1="0" y1="0" x2=".9" y2="1">
+      <stop offset="0%" stop-color="#d8b476"/>
+      <stop offset="46%" stop-color="#b58c4c"/>
+      <stop offset="100%" stop-color="#825922"/>
+    </linearGradient>
+    <linearGradient id="clasp" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e3c58b"/>
+      <stop offset="55%" stop-color="#bd9556"/>
+      <stop offset="100%" stop-color="#8f662c"/>
+    </linearGradient>
+    <linearGradient id="bevel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f4dfb4" stop-opacity=".38"/>
+      <stop offset="100%" stop-color="#f4dfb4" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softShadow" x="-35%" y="-35%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="20" stdDeviation="20" flood-color="#100c08" flood-opacity=".42"/>
+    </filter>
+    <filter id="cardShadow" x="-40%" y="-40%" width="180%" height="190%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#120e0a" flood-opacity=".36"/>
+    </filter>
+    <filter id="claspShadow" x="-50%" y="-50%" width="200%" height="220%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#3a280f" flood-opacity=".38"/>
+    </filter>
+    <clipPath id="circleClip">
+      <circle cx="512" cy="512" r="496"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#circleClip)">
+    <circle cx="512" cy="512" r="496" fill="url(#bg)"/>
+    <ellipse cx="512" cy="486" rx="330" ry="285" fill="url(#glow)"/>
+
+    <!-- 后方卡券一 -->
+    <g transform="rotate(-14 512 512)" filter="url(#cardShadow)">
+      <rect x="360" y="336" width="326" height="226" rx="42" fill="url(#goldBack)"/>
+      <rect x="366" y="342" width="314" height="214" rx="36" fill="none" stroke="#efd4a4" stroke-opacity=".24" stroke-width="2"/>
+      <path d="M 398 352 H 650 Q 672 352 675 370 V 376 H 398 Z" fill="url(#bevel)"/>
+    </g>
+
+    <!-- 后方卡券二 -->
+    <g transform="rotate(7 512 512)" filter="url(#cardShadow)">
+      <rect x="342" y="374" width="350" height="232" rx="44" fill="url(#goldMid)"/>
+      <rect x="348" y="380" width="338" height="220" rx="38" fill="none" stroke="#f0d7a7" stroke-opacity=".26" stroke-width="2"/>
+      <path d="M 382 390 H 654 Q 676 390 679 408 V 414 H 382 Z" fill="url(#bevel)"/>
+    </g>
+
+    <!-- 钱包主体 -->
+    <g filter="url(#softShadow)">
+      <rect x="300" y="430" width="424" height="244" rx="50" fill="url(#goldFront)"/>
+      <rect x="309" y="439" width="406" height="226" rx="43" fill="none" stroke="#f2d9a9" stroke-opacity=".22" stroke-width="2"/>
+
+      <!-- 上方翻盖光影分界 -->
+      <path d="M 300 508 H 724 V 512 Q 700 520 664 520 H 360 Q 324 520 300 512 Z" fill="#6f4c1e" fill-opacity=".16"/>
+      <path d="M 338 478 H 686" stroke="#f7e2b8" stroke-opacity=".2" stroke-width="3" stroke-linecap="round"/>
+
+      <!-- 右侧卡扣 -->
+      <g filter="url(#claspShadow)">
+        <rect x="640" y="500" width="104" height="120" rx="34" fill="url(#clasp)"/>
+        <rect x="646" y="506" width="92" height="108" rx="29" fill="none" stroke="#f5e0b4" stroke-opacity=".28" stroke-width="2"/>
+        <circle cx="692" cy="560" r="20" fill="#8e6429"/>
+        <circle cx="692" cy="560" r="14" fill="#c79c5d"/>
+        <circle cx="687" cy="555" r="5" fill="#f3ddb0" fill-opacity=".55"/>
+      </g>
+
+      <!-- 底部漫射暗部 -->
+      <path d="M 300 590 Q 300 674 350 674 H 674 Q 724 674 724 590 V 620 Q 724 674 674 674 H 350 Q 300 674 300 620 Z" fill="#4b3113" fill-opacity=".2"/>
+    </g>
+
+    <!-- 外圈细暖金描边 -->
+    <circle cx="512" cy="512" r="487" fill="none" stroke="url(#ring)" stroke-width="5"/>
+    <circle cx="512" cy="512" r="476" fill="none" stroke="#d8b57a" stroke-opacity=".1" stroke-width="2"/>
+  </g>
+</svg>

@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, MYSQL_TABLE_OPTIONS, TimestampMixin
+from .enums import CourseStatus, enum_column
 
 if TYPE_CHECKING:
     from .gift_log import GiftLog
@@ -35,6 +36,7 @@ class Course(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("price >= 0", name="price_non_negative"),
         Index("ix_courses_is_hot_topic", "is_hot_topic"),
+        Index("ix_courses_status", "status"),
         MYSQL_TABLE_OPTIONS,
     )
 
@@ -72,6 +74,21 @@ class Course(TimestampMixin, Base):
         default=False,
         server_default=text("0"),
         comment="是否进入首页热门板块",
+    )
+    appointment_quota: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        comment="购买 / 赠课附赠的专项指导预约次数",
+    )
+    status: Mapped[CourseStatus] = mapped_column(
+        enum_column(CourseStatus, name="course_status"),
+        nullable=False,
+        default=CourseStatus.DRAFT,
+        # 迁移回填历史课程时使用 published；新建课程由服务层显式写入 draft。
+        server_default=text("'published'"),
+        comment="published / draft / offline",
     )
 
     lessons: Mapped[list["Lesson"]] = relationship(

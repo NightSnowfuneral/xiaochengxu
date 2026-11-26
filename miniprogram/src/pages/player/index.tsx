@@ -6,11 +6,12 @@ import Taro, {
 } from '@tarojs/taro'
 
 import ExpiredAccessModal from '../../components/ExpiredAccessModal'
-import LoginModal from '../../components/LoginModal'
+import LoadingSpin from '../../components/LoadingSpin'
 import MockModeBadge from '../../components/MockModeBadge'
 import VodPlayer from '../../components/VodPlayer'
+import WxAuthSheet from '../../components/WxAuthSheet'
 import { PROGRESS_REPORT_INTERVAL_MS } from '../../constants'
-import { useAuthGuard } from '../../hooks/useAuthGuard'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
 import {
   finishLesson,
@@ -30,7 +31,6 @@ import {
   parsePositiveInt,
   safeDecode
 } from '../../utils/format'
-import { openLoginModal } from '../../utils/loginModal'
 
 import './index.scss'
 
@@ -47,12 +47,13 @@ function formatLessonDuration(seconds: number | undefined): string {
 
 export default function PlayerPage() {
   const router = useRouter()
-  const { checking, allowed } = useAuthGuard()
+  const { openLogin } = useRequireAuth()
   useSystemConfig()
 
   const routeLessonId = parsePositiveInt(router.params.lessonId)
   const routeCourseId = parsePositiveInt(router.params.courseId)
   const routeTitle = safeDecode(router.params.title) || '课程播放'
+  const token = useAppSelector((state) => state.user.token)
   const isMockLogin = useAppSelector((state) => state.user.isMockLogin)
 
   const [status, setStatus] = useState<PlayerStatus>('idle')
@@ -166,14 +167,14 @@ export default function PlayerPage() {
   }, [lessonId])
 
   useEffect(() => {
-    if (allowed && lessonId) {
+    if (token && lessonId) {
       void loadAuth()
     }
-  }, [allowed, lessonId, loadAuth])
+  }, [lessonId, loadAuth, token])
 
   /** 拉取课程章节；失败不影响视频播放，只在常驻课时列表处提示。 */
   useEffect(() => {
-    if (!allowed || !resolvedCourseId) {
+    if (!token || !resolvedCourseId) {
       return
     }
     let cancelled = false
@@ -201,7 +202,7 @@ export default function PlayerPage() {
     return () => {
       cancelled = true
     }
-  }, [allowed, resolvedCourseId])
+  }, [resolvedCourseId, token])
 
   const flushProgress = useCallback(() => {
     if (!lessonId) {
@@ -383,26 +384,27 @@ export default function PlayerPage() {
   }
 
   const renderPlayerBody = () => {
-    if (checking) {
-      return <View className='loading-line'>正在确认登录状态…</View>
-    }
-    if (!allowed) {
+    if (!token) {
       return (
         <View className='player-state'>
           <View className='state-block'>
             <Text>登录并购买课程后才能播放</Text>
             <Text
               className='state-block__action'
-              onClick={() => openLoginModal('登录后即可播放课程')}
+              onClick={() => openLogin('登录后即可播放课程')}
             >
-              去登录
+              手机号快捷登录
             </Text>
           </View>
         </View>
       )
     }
     if (status === 'loading' || status === 'idle') {
-      return <View className='loading-line'>正在获取播放授权…</View>
+      return (
+        <View className='player-auth-loading'>
+          <LoadingSpin tip='视频正在加载…' />
+        </View>
+      )
     }
     if (status === 'error') {
       return (
@@ -563,7 +565,6 @@ export default function PlayerPage() {
         onRepurchase={handleRepurchase}
         onBackToCatalog={handleBackToCatalog}
       />
-      <LoginModal />
       {/* 全屏时整条导航栏隐藏，退出按钮只在视频画面内；胶囊为微信系统控件，
           无法通过小程序 API 隐藏，仅在深色画面上做视觉适配。 */}
       {!playerFullscreen ? (
@@ -584,6 +585,7 @@ export default function PlayerPage() {
           </View>
         </View>
       ) : null}
+      <WxAuthSheet />
     </View>
   )
 }

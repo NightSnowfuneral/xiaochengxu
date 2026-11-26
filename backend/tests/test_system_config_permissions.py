@@ -29,6 +29,10 @@ async def test_system_config_read_is_public_and_write_requires_admin(
     public_read = await client.get(PUBLIC_CONFIG_URL)
     assert public_read.status_code == 200, public_read.text
     assert public_read.json()["configs"]["home_title"] == "禾下美学院"
+    assert (
+        public_read.json()["configs"]["home_subtitle"]
+        == "以系统课程，点亮每一次成长"
+    )
 
     admin_read_without_token = await client.get(ADMIN_CONFIGS_URL)
     assert admin_read_without_token.status_code == 401
@@ -73,4 +77,31 @@ async def test_system_config_read_is_public_and_write_requires_admin(
     assert (
         public_after_write.json()["configs"]["home_title"]
         == "禾下美学院（阶段9）"
+    )
+
+
+async def test_home_subtitle_can_be_updated_via_admin(
+    client,
+    session_factory,
+    admin_account,
+) -> None:
+    async with session_factory() as session:
+        await system_config_service.initialize_default_configs(session)
+
+    admin_token = create_admin_access_token(admin_account.id)
+    updated_subtitle = "以系统课程，陪伴每一次成长"
+    response = await client.put(
+        f"{ADMIN_CONFIGS_URL}/home_subtitle",
+        headers=auth_headers(admin_token),
+        json={"config_value": updated_subtitle},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["config_value"] == updated_subtitle
+    assert body["default_value"] == "以系统课程，点亮每一次成长"
+
+    public_read = await client.get(PUBLIC_CONFIG_URL)
+    assert public_read.status_code == 200
+    assert (
+        public_read.json()["configs"]["home_subtitle"] == updated_subtitle
     )

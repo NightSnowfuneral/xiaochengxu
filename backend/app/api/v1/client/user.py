@@ -1,9 +1,8 @@
-"""C 端用户与微信登录路由。
+"""C 端个人资料路由。
 
-`wx-login` 是 C 端唯一免 JWT 接口；手机号绑定、头像昵称与个人中心信息
-均要求 C 端用户 JWT。手机号只通过微信 `getPhoneNumber` 动态令牌在后端
-换取，前端不会上传明文手机号；头像只接受图片二进制，由后端代理写入
-COS，客户端无法直接指定任意图片地址。
+登录 / 登出 / Token 校验已独立到 `client/auth.py`。个人资料、头像等
+均要求 C 端用户 JWT；手机号只由登录接口经微信授权写入，前端不会上传
+明文手机号；头像只接受图片二进制，由后端代理写入 COS。
 """
 
 from __future__ import annotations
@@ -12,13 +11,10 @@ from fastapi import APIRouter, File, UploadFile
 
 from ....core.exception import BusinessException
 from ....schemas import (
-    MobileBindRequest,
     ProfileUpdateRequest,
     UserResponse,
-    WxLoginRequest,
-    WxLoginResponse,
 )
-from ....services import auth_service, cos_service, user_service
+from ....services import cos_service, user_service
 from ...deps import DbSession, UserDep
 
 router = APIRouter(prefix="/client", tags=["client-user"])
@@ -45,35 +41,6 @@ async def _read_avatar_bytes(file: UploadFile) -> bytes:
             )
         chunks.append(chunk)
     return b"".join(chunks)
-
-
-@router.post(
-    "/auth/wx-login",
-    response_model=WxLoginResponse,
-    summary="微信静默登录",
-)
-async def wx_login(
-    payload: WxLoginRequest,
-    session: DbSession,
-) -> WxLoginResponse:
-    return await auth_service.wx_login(session, payload)
-
-
-@router.post(
-    "/auth/bind-mobile",
-    response_model=UserResponse,
-    summary="绑定微信手机号",
-)
-async def bind_mobile(
-    payload: MobileBindRequest,
-    session: DbSession,
-    user: UserDep,
-) -> UserResponse:
-    return await auth_service.bind_mobile(
-        session,
-        user_id=user.user_id,
-        payload=payload,
-    )
 
 
 @router.get(

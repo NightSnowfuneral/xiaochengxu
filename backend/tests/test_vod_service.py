@@ -48,6 +48,91 @@ def test_pick_play_url_prefers_h264_transcode_over_hevc_original() -> None:
     )
 
 
+def test_pick_play_url_prefers_transcoded_mp4_over_original() -> None:
+    media_info = {
+        "BasicInfo": {
+            "MediaUrl": "https://example.vod-qcloud.com/original.mp4",
+        },
+        "MetaData": {
+            "Bitrate": 3241247,
+            "Size": 797_000_000,
+            "VideoStreamSet": [{"Codec": "h264", "Bitrate": 3241247}],
+        },
+        "TranscodeInfo": {
+            "TranscodeSet": [
+                {
+                    "Definition": 0,
+                    "Url": "https://example.vod-qcloud.com/original.mp4",
+                    "Bitrate": 3241247,
+                    "VideoStreamSet": [{"Codec": "h264"}],
+                },
+                {
+                    "Definition": 100800,
+                    "Url": "https://example.vod-qcloud.com/transcoded.mp4",
+                    "Bitrate": 601284,
+                    "VideoStreamSet": [{"Codec": "h264"}],
+                },
+            ]
+        },
+    }
+
+    assert (
+        _pick_play_url(media_info)
+        == "https://example.vod-qcloud.com/transcoded.mp4"
+    )
+
+
+def test_pick_play_url_prefers_lowest_bitrate_transcode() -> None:
+    media_info = {
+        "TranscodeInfo": {
+            "TranscodeSet": [
+                {
+                    "Definition": 100010,
+                    "Url": "https://example.vod-qcloud.com/240p.mp4",
+                    "Bitrate": 280000,
+                    "VideoStreamSet": [{"Codec": "h264"}],
+                },
+                {
+                    "Definition": 100800,
+                    "Url": "https://example.vod-qcloud.com/480p.mp4",
+                    "Bitrate": 601284,
+                    "VideoStreamSet": [{"Codec": "h264"}],
+                },
+            ]
+        },
+    }
+
+    assert (
+        _pick_play_url(media_info)
+        == "https://example.vod-qcloud.com/240p.mp4"
+    )
+
+
+def test_pick_play_url_keeps_original_when_no_transcode_exists() -> None:
+    media_info = {
+        "BasicInfo": {
+            "MediaUrl": "https://example.vod-qcloud.com/original.mp4",
+        },
+        "MetaData": {
+            "VideoStreamSet": [{"Codec": "h264"}],
+        },
+        "TranscodeInfo": {
+            "TranscodeSet": [
+                {
+                    "Definition": 0,
+                    "Url": "https://example.vod-qcloud.com/original.mp4",
+                    "VideoStreamSet": [{"Codec": "h264"}],
+                }
+            ]
+        },
+    }
+
+    assert (
+        _pick_play_url(media_info)
+        == "https://example.vod-qcloud.com/original.mp4"
+    )
+
+
 def test_pick_play_url_falls_back_to_adaptive_hls() -> None:
     media_info = {
         "AdaptiveDynamicStreamingInfo": {

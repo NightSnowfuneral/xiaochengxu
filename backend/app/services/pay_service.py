@@ -23,9 +23,11 @@ import json
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from redis.asyncio import Redis
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,13 +37,24 @@ from ..core.exception import (
     InternalServerError,
     NotFoundError,
 )
-from ..models import Order, OrderStatus, User, UserCourseSource
+from ..core.order_lock import order_lock
+from ..models import (
+    Course,
+    Order,
+    OrderOperationLog,
+    OrderOperationType,
+    OrderSource,
+    OrderStatus,
+    User,
+    UserCourse,
+    UserCourseSource,
+)
 from ..schemas import (
     WeChatPayNotifyResponse,
     WeChatPayNotifyTransaction,
     WeChatPayParams,
 )
-from . import course_service, user_course_service
+from . import appointment_service, course_service, user_course_service
 from .wechat_pay_crypto import (
     WeChatPayApiError,
     close_transaction_sync,
@@ -57,7 +70,9 @@ logger = logging.getLogger(__name__)
 _CALLBACK_MAX_ATTEMPTS = 2
 _DESCRIPTION_MAX_LENGTH = 127
 _LOG_MESSAGE_LIMIT = 300
-_CLOSE_TIMEOUT_MINUTES = 30
+_PAYLOAD_STORE_LIMIT = 8000
+_ORDER_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_CLOSED_TRADE_STATES = {"CLOSED", "REVOKED", "PAYERROR"}
 
 # 微信关单 / 查单可能返回的错误码（兼容 v2/v3 命名差异）
 _ALREADY_PAID_CODES = {"ORDERPAID", "ORDER_PAID"}
@@ -67,6 +82,110 @@ _ORDER_NOT_FOUND_CODES = {"ORDER_NOT_EXIST", "ORDERNOTEXIST"}
 
 def _brief(value: object) -> str:
     return str(value)[:_LOG_MESSAGE_LIMIT]
+
+
+def _order_now_naive() -> datetime:
+    """订单 created_at 由 MySQL 默认值写入服务器本地时间（Asia/Shanghai）。"""
+
+    return datetime.now(_ORDER_TIMEZONE).replace(tzinfo=None)
+
+
+def order_now_naive() -> datetime:
+    """应用侧订单时间基准（Asia/Shanghai），仅作数据库时间不可用时的兜底。"""
+
+    return _order_now_naive()
+
+
+async def db_now_naive(session: AsyncSession) -> datetime:
+    """读取数据库当前时间（naive）。
+
+    `orders.created_at` 由 MySQL `CURRENT_TIMESTAMP` 写入数据库本地时间，
+    超时判断必须使用同一时钟，否则应用与数据库时区不一致时会相差数小时。
+    """
+
+    value = await session.scalar(select(func.now()))
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return _order_now_naive()
+
+
+def _payload_text(payload: object) -> str | None:
+    if payload is None:
+        return None
+    if isinstance(payload, bytes):
+        text = payload.decode("utf-8", errors="replace")
+    elif isinstance(payload, str):
+        text = payload
+    else:
+        try:
+            text = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(payload)
+    return text[:_PAYLOAD_STORE_LIMIT]
+
+
+def _write_operation_log(
+    session: AsyncSession,
+    *,
+    order: Order,
+    operation_type: OrderOperationType,
+    trade_state: str | None,
+    payload: object = None,
+    error_message: str | None = None,
+    operator_user_id: int | None = None,
+) -> None:
+    """把取消 / 关单 / 对账结果追加到订单操作日志。调用方负责提交。"""
+
+    session.add(
+        OrderOperationLog(
+            order_no=order.order_no,
+            user_id=order.user_id,
+            operator_user_id=operator_user_id,
+            operation_type=operation_type,
+            wechat_trade_state=trade_state,
+            wechat_response=_payload_text(payload),
+            error_message=(
+                error_message[:_LOG_MESSAGE_LIMIT]
+                if error_message is not None
+                else None
+            ),
+        )
+    )
+
+
+def _validate_success_payload(
+    order: Order,
+    payload: dict[str, object],
+) -> WeChatPayNotifyTransaction:
+    """校验微信查单结果为成功交易，并复用回调的金额 / 付款人核对。"""
+
+    try:
+        transaction = WeChatPayNotifyTransaction.model_validate(payload)
+    except ValidationError as exc:
+        logger.error(
+            "微信支付查询结果字段校验失败: out_trade_no=%s",
+            order.order_no,
+        )
+        raise BusinessException(
+            "微信支付查询结果不合法",
+            code="PAYMENT_QUERY_INVALID",
+            status_code=502,
+        ) from exc
+
+    if transaction.out_trade_no != order.order_no:
+        logger.error(
+            "微信支付查询订单号不匹配: expected=%s actual=%s",
+            order.order_no,
+            transaction.out_trade_no,
+        )
+        raise BusinessException(
+            "微信支付查询结果不合法",
+            code="PAYMENT_QUERY_INVALID",
+            status_code=502,
+        )
+
+    _validate_merchant(transaction)
+    return transaction
 
 
 def _create_payment_sync(
@@ -345,6 +464,76 @@ async def _get_order_by_no(
     return order
 
 
+async def grant_paid_order_access(
+    session: AsyncSession,
+    order: Order,
+    *,
+    paid_at: datetime,
+    access: UserCourse | None = None,
+    valid_days: int | None = None,
+    appointment_quota: int | None = None,
+) -> None:
+    """为首次转为 paid 的订单发放课程授权与预约次数（不提交事务）。
+
+    微信支付 v3 与虚拟支付共用，调用方负责订单行锁、状态流转与 commit。
+
+    - 无授权：按 paid_at + COURSE_VALID_DAY 新建 BUY 授权；
+    - 授权已过期：复用原记录，以本次支付时间刷新有效期窗口与来源；
+    - 授权仍在有效期内（例如付款期间被赠课）：不覆盖既有授权；
+    - 预约次数按 order_no 幂等发放，重复回调不会累计。
+    """
+
+    if access is None:
+        access = await user_course_service.get_course_access(
+            session,
+            user_id=order.user_id,
+            course_id=order.course_id,
+        )
+    if appointment_quota is None:
+        appointment_quota = int(
+            await session.scalar(
+                select(Course.appointment_quota).where(
+                    Course.id == order.course_id
+                )
+            )
+            or 0
+        )
+    if valid_days is None:
+        valid_days = settings.course_valid_day
+
+    if access is None:
+        # 首次购买：以支付完成时间起算有效天数。
+        await course_service.add_course_access(
+            session,
+            user_id=order.user_id,
+            course_id=order.course_id,
+            source=UserCourseSource.BUY,
+            valid_start_at=paid_at,
+            valid_end_at=user_course_service.add_validity_days(
+                paid_at,
+                valid_days,
+            ),
+            appointment_quota_count=appointment_quota,
+        )
+    elif not user_course_service.resolve_validity(access).can_play:
+        # 过期后重新购买：复用原授权记录，刷新为新的有效期窗口。
+        user_course_service.apply_validity_days(
+            access,
+            start_at=paid_at,
+            days=valid_days,
+        )
+        access.source = UserCourseSource.BUY
+        access.appointment_quota_count = appointment_quota
+    # 已处于有效期内时不覆盖既有授权。
+
+    await appointment_service.grant_purchase_quota(
+        session,
+        user_id=order.user_id,
+        count=appointment_quota,
+        order_no=order.order_no,
+    )
+
+
 async def _process_successful_transaction(
     session: AsyncSession,
     transaction: WeChatPayNotifyTransaction,
@@ -376,6 +565,21 @@ async def _process_successful_transaction(
                 raise NotFoundError(
                     "支付回调对应的订单不存在",
                     code="PAYMENT_ORDER_NOT_FOUND",
+                )
+
+            if order.source is not OrderSource.WECHAT_PAY:
+                await session.rollback()
+                logger.error(
+                    "非微信支付订单收到 v3 支付结果: origin=%s "
+                    "out_trade_no=%s source=%s",
+                    origin,
+                    transaction.out_trade_no,
+                    order.source,
+                )
+                raise BusinessException(
+                    "订单来源与支付渠道不一致",
+                    code="PAYMENT_SOURCE_MISMATCH",
+                    status_code=409,
                 )
 
             order_user_id = order.user_id
@@ -435,6 +639,14 @@ async def _process_successful_transaction(
                 user_id=order.user_id,
                 course_id=order.course_id,
             )
+            appointment_quota = int(
+                await session.scalar(
+                    select(Course.appointment_quota).where(
+                        Course.id == order.course_id
+                    )
+                )
+                or 0
+            )
 
             if order.status == OrderStatus.REFUNDED:
                 await session.rollback()
@@ -452,37 +664,42 @@ async def _process_successful_transaction(
                 )
 
             if order.status == OrderStatus.PAID:
-                # 已处理过的结果：只补齐意外缺失的授权，不重复写授权，
-                # 也绝不覆盖已有授权的有效期。
-                repaired = access is None
+                # 已处理过的结果：只更新支付流水等非授权字段。
+                # 首次支付时订单置 PAID 与写入 user_courses 在同一事务内提交，
+                # 因此此处 access 缺失只能说明授权已被后台收回（或人工删除）。
+                # 此时绝不能补发：否则重复回调 / 微信重试会把管理员收回的
+                # 课程重新“复活”。预约次数按 order_no 幂等发放，无需重复累加。
                 order.pay_transaction_id = transaction.transaction_id
                 if order.openid is None:
                     order.openid = transaction.payer.openid
-                if repaired:
-                    repair_start = order.paid_at or paid_at
-                    await course_service.add_course_access(
-                        session,
-                        user_id=order.user_id,
-                        course_id=order.course_id,
-                        source=UserCourseSource.BUY,
-                        valid_start_at=repair_start,
-                        valid_end_at=user_course_service.add_validity_days(
-                            repair_start,
-                            valid_days,
-                        ),
-                    )
+                await appointment_service.grant_purchase_quota(
+                    session,
+                    user_id=order.user_id,
+                    count=appointment_quota,
+                    order_no=order.order_no,
+                )
                 await session.commit()
 
                 logger.info(
                     "重复支付回调已幂等处理: origin=%s out_trade_no=%s "
-                    "user_id=%s mobile=%s transaction_id=%s repaired=%s",
+                    "user_id=%s mobile=%s transaction_id=%s "
+                    "access_present=%s",
                     origin,
                     transaction.out_trade_no,
                     order_user_id,
                     payer_mobile,
                     transaction.transaction_id,
-                    repaired,
+                    access is not None,
                 )
+                if access is None:
+                    logger.info(
+                        "重复支付回调未补发缺失授权（可能已被后台收回）: "
+                        "origin=%s out_trade_no=%s user_id=%s course_id=%s",
+                        origin,
+                        transaction.out_trade_no,
+                        order.user_id,
+                        order.course_id,
+                    )
                 return order
 
             if order.status == OrderStatus.CLOSED:
@@ -502,28 +719,14 @@ async def _process_successful_transaction(
             if order.openid is None:
                 order.openid = transaction.payer.openid
 
-            if access is None:
-                # 首次购买：以微信支付完成时间起算有效天数。
-                await course_service.add_course_access(
-                    session,
-                    user_id=order.user_id,
-                    course_id=order.course_id,
-                    source=UserCourseSource.BUY,
-                    valid_start_at=paid_at,
-                    valid_end_at=user_course_service.add_validity_days(
-                        paid_at,
-                        valid_days,
-                    ),
-                )
-            elif not user_course_service.resolve_validity(access).can_play:
-                # 过期后重新购买：复用原授权记录，刷新为新的有效期窗口。
-                user_course_service.apply_validity_days(
-                    access,
-                    start_at=paid_at,
-                    days=valid_days,
-                )
-                access.source = UserCourseSource.BUY
-            # 已处于有效期内（例如付款期间被赠课）时不覆盖既有授权。
+            await grant_paid_order_access(
+                session,
+                order,
+                paid_at=paid_at,
+                access=access,
+                valid_days=valid_days,
+                appointment_quota=appointment_quota,
+            )
 
             await session.commit()
 
@@ -567,10 +770,12 @@ async def handle_payment_callback(
     *,
     headers: Mapping[str, str],
     body: bytes | str,
+    redis: Redis | None = None,
 ) -> WeChatPayNotifyResponse:
     """处理微信支付异步回调，幂等发课。
 
     并发安全：
+    - 传入 Redis 时先获取订单级分布式锁，与取消 / 超时关单串行化；
     - 以 order_no 加 `SELECT ... FOR UPDATE`，同一订单的结果被串行化；
     - user_courses 联合唯一约束兜底「支付发课 vs 后台赠课」并发；
     - orders.pay_transaction_id 唯一约束兜底同一微信支付单重复发课。
@@ -581,11 +786,19 @@ async def handle_payment_callback(
         return WeChatPayNotifyResponse()
 
     _validate_merchant(transaction)
-    await _process_successful_transaction(
-        session,
-        transaction,
-        origin="callback",
-    )
+    if redis is None:
+        await _process_successful_transaction(
+            session,
+            transaction,
+            origin="callback",
+        )
+    else:
+        async with order_lock(redis, transaction.out_trade_no):
+            await _process_successful_transaction(
+                session,
+                transaction,
+                origin="callback",
+            )
     return WeChatPayNotifyResponse()
 
 
@@ -609,21 +822,13 @@ async def _close_wechat_order(order_no: str) -> None:
     await asyncio.to_thread(_run)
 
 
-async def query_and_sync_order(
+async def _query_and_sync_pending(
     session: AsyncSession,
     *,
+    order: Order,
     user_id: int,
-    order_no: str,
 ) -> Order:
-    """查询本地订单；pending 时主动查微信并同步支付结果。
-
-    用于前端支付后轮询兜底：即使异步回调延迟或丢失，只要微信侧已支付
-    就会立即走与回调完全相同的发课逻辑。
-    """
-
-    order = await _get_order_by_no(session, order_no=order_no, user_id=user_id)
-    if order.status is not OrderStatus.PENDING:
-        return order
+    """已确认订单为 pending 且已持有订单锁后，主动查微信并同步。"""
 
     try:
         payload = await _query_wechat_order(order.order_no)
@@ -660,32 +865,7 @@ async def query_and_sync_order(
         )
 
     if trade_state == "SUCCESS":
-        try:
-            transaction = WeChatPayNotifyTransaction.model_validate(payload)
-        except ValidationError as exc:
-            logger.error(
-                "微信支付查询结果字段校验失败: out_trade_no=%s",
-                order.order_no,
-            )
-            raise BusinessException(
-                "微信支付查询结果不合法",
-                code="PAYMENT_QUERY_INVALID",
-                status_code=502,
-            ) from exc
-
-        if transaction.out_trade_no != order.order_no:
-            logger.error(
-                "微信支付查询订单号不匹配: expected=%s actual=%s",
-                order.order_no,
-                transaction.out_trade_no,
-            )
-            raise BusinessException(
-                "微信支付查询结果不合法",
-                code="PAYMENT_QUERY_INVALID",
-                status_code=502,
-            )
-
-        _validate_merchant(transaction)
+        transaction = _validate_success_payload(order, payload)
         await _process_successful_transaction(
             session,
             transaction,
@@ -697,7 +877,7 @@ async def query_and_sync_order(
             user_id=user_id,
         )
 
-    if trade_state in {"CLOSED", "REVOKED", "PAYERROR"}:
+    if trade_state in _CLOSED_TRADE_STATES:
         locked = await _get_order_by_no(
             session,
             order_no=order.order_no,
@@ -706,6 +886,13 @@ async def query_and_sync_order(
         )
         if locked.status is OrderStatus.PENDING:
             locked.status = OrderStatus.CLOSED
+            _write_operation_log(
+                session,
+                order=locked,
+                operation_type=OrderOperationType.RECONCILE_CLOSE,
+                trade_state=trade_state,
+                payload=payload,
+            )
             await session.commit()
             logger.info(
                 "微信侧订单已关闭，同步本地状态: out_trade_no=%s state=%s",
@@ -722,50 +909,300 @@ async def query_and_sync_order(
     return order
 
 
-async def close_unpaid_order(
+async def query_and_sync_order(
     session: AsyncSession,
     *,
     user_id: int,
     order_no: str,
+    redis: Redis | None = None,
 ) -> Order:
-    """关闭超过 30 分钟仍未支付的订单。
+    """查询本地订单；pending 时主动查微信并同步支付结果。
 
-    - 已支付 / 已关闭 / 已退款订单直接返回当前状态；
-    - 未满 30 分钟拒绝关单（PAYMENT_CLOSE_TOO_EARLY）；
-    - 微信侧已支付（关单竞态）时转为主动查单并发课。
+    用于前端支付后轮询兜底：即使异步回调延迟或丢失，只要微信侧已支付
+    就会立即走与回调完全相同的发课逻辑。传入 Redis 时与取消 / 关单互斥。
     """
 
     order = await _get_order_by_no(session, order_no=order_no, user_id=user_id)
+    # 虚拟支付订单由 xpay 回调维护状态，绝不调用微信支付 v3 查单。
+    if order.source is not OrderSource.WECHAT_PAY:
+        return order
     if order.status is not OrderStatus.PENDING:
         return order
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    created_at = order.created_at
-    if created_at is not None and created_at.tzinfo is not None:
-        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
-    if created_at is not None and now - created_at < timedelta(
-        minutes=_CLOSE_TIMEOUT_MINUTES
-    ):
+    if redis is None:
+        return await _query_and_sync_pending(
+            session,
+            order=order,
+            user_id=user_id,
+        )
+
+    async with order_lock(redis, order.order_no):
+        locked = await _get_order_by_no(
+            session,
+            order_no=order.order_no,
+            user_id=user_id,
+        )
+        if locked.status is not OrderStatus.PENDING:
+            return locked
+        return await _query_and_sync_pending(
+            session,
+            order=locked,
+            user_id=user_id,
+        )
+
+
+async def _mark_order_closed(
+    session: AsyncSession,
+    *,
+    order: Order,
+    trade_state: str | None,
+    payload: object,
+    operation_type: OrderOperationType,
+    operator_user_id: int | None,
+    error_message: str | None = None,
+) -> Order:
+    """把 pending 订单置为 closed，并在同一事务写操作日志。"""
+
+    locked = await _get_order_by_no(
+        session,
+        order_no=order.order_no,
+        user_id=order.user_id,
+        for_update=True,
+    )
+    if locked.status is OrderStatus.PENDING:
+        locked.status = OrderStatus.CLOSED
+        _write_operation_log(
+            session,
+            order=locked,
+            operation_type=operation_type,
+            trade_state=trade_state,
+            payload=payload,
+            error_message=error_message,
+            operator_user_id=operator_user_id,
+        )
+        await session.commit()
+        logger.info(
+            "订单已关闭: out_trade_no=%s user_id=%s operation=%s state=%s",
+            locked.order_no,
+            locked.user_id,
+            operation_type.value,
+            trade_state,
+        )
+    return locked
+
+
+async def _process_paid_during_close(
+    session: AsyncSession,
+    *,
+    order: Order,
+    payload: dict[str, object],
+    operation_type: OrderOperationType,
+    operator_user_id: int | None,
+) -> Order:
+    """取消 / 关单竞态下发现微信已支付：走与回调相同的发课逻辑。"""
+
+    transaction = _validate_success_payload(order, payload)
+    await _process_successful_transaction(
+        session,
+        transaction,
+        origin="cancel",
+    )
+    fresh = await _get_order_by_no(
+        session,
+        order_no=order.order_no,
+        user_id=order.user_id,
+    )
+    _write_operation_log(
+        session,
+        order=fresh,
+        operation_type=operation_type,
+        trade_state="SUCCESS",
+        payload=payload,
+        operator_user_id=operator_user_id,
+    )
+    await session.commit()
+    logger.info(
+        "取消时发现订单已支付，按支付成功处理: out_trade_no=%s user_id=%s",
+        fresh.order_no,
+        fresh.user_id,
+    )
+    return fresh
+
+
+async def _cancel_pending_order_locked(
+    session: AsyncSession,
+    *,
+    order: Order,
+    operation_type: OrderOperationType,
+    operator_user_id: int | None,
+    require_timeout: bool,
+    strict: bool,
+) -> Order:
+    """在已持有订单锁的前提下执行取消 / 关单。
+
+    流程严格以微信侧状态为准：
+    1. 查单为 SUCCESS：放弃取消，按支付成功发课；
+    2. 查单已关闭 / 不存在：同步本地为 closed；
+    3. 查单未支付：调用微信关单，成功后本地置 closed 并写日志；
+    4. 关单异常：再次查单，以微信最新状态为准；仍无法确认时不改本地状态。
+    """
+
+    if order.status is not OrderStatus.PENDING:
+        if strict:
+            raise BusinessException(
+                "仅待支付订单可以取消",
+                code="ORDER_NOT_PENDING",
+                status_code=409,
+            )
+        return order
+
+    if require_timeout:
+        timeout_minutes = max(1, int(settings.order_close_timeout_minutes))
+        created_at = order.created_at
+        if created_at is not None and created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
+        if created_at is not None and (
+            await db_now_naive(session) - created_at
+            < timedelta(minutes=timeout_minutes)
+        ):
+            raise BusinessException(
+                f"订单创建未满 {timeout_minutes} 分钟，暂不能关闭",
+                code="PAYMENT_CLOSE_TOO_EARLY",
+                status_code=409,
+            )
+
+    try:
+        payload = await _query_wechat_order(order.order_no)
+    except WeChatPayApiError as exc:
+        if exc.code in _ORDER_NOT_FOUND_CODES:
+            return await _mark_order_closed(
+                session,
+                order=order,
+                trade_state="ORDER_NOT_EXIST",
+                payload=exc.payload,
+                operation_type=operation_type,
+                operator_user_id=operator_user_id,
+            )
+        _write_operation_log(
+            session,
+            order=order,
+            operation_type=operation_type,
+            trade_state=None,
+            payload=exc.payload,
+            error_message=f"微信查单失败 {exc.code}",
+            operator_user_id=operator_user_id,
+        )
+        await session.commit()
+        logger.error(
+            "取消订单前查单失败: out_trade_no=%s status=%s code=%s body=%s",
+            order.order_no,
+            exc.http_status,
+            exc.code,
+            _brief(exc.payload),
+        )
         raise BusinessException(
-            "订单创建未满 30 分钟，暂不能关闭",
-            code="PAYMENT_CLOSE_TOO_EARLY",
+            "暂时无法确认订单支付状态，请稍后重试",
+            code="PAYMENT_QUERY_FAILED",
+            status_code=502,
+        ) from exc
+
+    trade_state = payload.get("trade_state")
+    if not isinstance(trade_state, str):
+        _write_operation_log(
+            session,
+            order=order,
+            operation_type=operation_type,
+            trade_state=None,
+            payload=payload,
+            error_message="微信查单缺少 trade_state",
+            operator_user_id=operator_user_id,
+        )
+        await session.commit()
+        raise BusinessException(
+            "微信支付查询响应异常",
+            code="PAYMENT_QUERY_FAILED",
+            status_code=502,
+        )
+
+    if trade_state == "SUCCESS":
+        return await _process_paid_during_close(
+            session,
+            order=order,
+            payload=payload,
+            operation_type=operation_type,
+            operator_user_id=operator_user_id,
+        )
+
+    if trade_state in _CLOSED_TRADE_STATES:
+        return await _mark_order_closed(
+            session,
+            order=order,
+            trade_state=trade_state,
+            payload=payload,
+            operation_type=operation_type,
+            operator_user_id=operator_user_id,
+        )
+
+    if trade_state not in {"NOTPAY", "USERPAYING"}:
+        _write_operation_log(
+            session,
+            order=order,
+            operation_type=operation_type,
+            trade_state=trade_state,
+            payload=payload,
+            error_message="微信交易状态不支持取消",
+            operator_user_id=operator_user_id,
+        )
+        await session.commit()
+        raise BusinessException(
+            "订单当前状态不可取消，请稍后重试",
+            code="ORDER_STATE_UNSUPPORTED",
             status_code=409,
         )
 
-    mark_closed = False
     try:
         await _close_wechat_order(order.order_no)
-        mark_closed = True
     except WeChatPayApiError as exc:
         if exc.code in _ALREADY_PAID_CODES:
-            logger.warning(
-                "关单时发现订单已支付，转为主动查单: out_trade_no=%s",
-                order.order_no,
-            )
-            return await query_and_sync_order(
+            try:
+                latest_payload = await _query_wechat_order(order.order_no)
+            except WeChatPayApiError as query_exc:
+                _write_operation_log(
+                    session,
+                    order=order,
+                    operation_type=operation_type,
+                    trade_state=None,
+                    payload={
+                        "query": payload,
+                        "close_error": exc.payload,
+                        "requery_error": query_exc.payload,
+                    },
+                    error_message=(
+                        f"关单返回已支付，再次查单失败 {query_exc.code}"
+                    ),
+                    operator_user_id=operator_user_id,
+                )
+                await session.commit()
+                raise BusinessException(
+                    "暂时无法确认订单支付状态，请稍后重试",
+                    code="PAYMENT_QUERY_FAILED",
+                    status_code=502,
+                ) from query_exc
+            if latest_payload.get("trade_state") == "SUCCESS":
+                return await _process_paid_during_close(
+                    session,
+                    order=order,
+                    payload=latest_payload,
+                    operation_type=operation_type,
+                    operator_user_id=operator_user_id,
+                )
+            return await _cancel_after_close_error(
                 session,
-                user_id=user_id,
-                order_no=order.order_no,
+                order=order,
+                operation_type=operation_type,
+                operator_user_id=operator_user_id,
+                query_payload=latest_payload,
+                close_error=exc,
             )
         if exc.code in _ALREADY_CLOSED_CODES | _ORDER_NOT_FOUND_CODES:
             logger.info(
@@ -774,44 +1211,382 @@ async def close_unpaid_order(
                 order.order_no,
                 exc.code,
             )
-            mark_closed = True
-        else:
-            logger.error(
-                "微信支付关单失败: out_trade_no=%s status=%s code=%s body=%s",
-                order.order_no,
-                exc.http_status,
-                exc.code,
-                _brief(exc.payload),
+            return await _mark_order_closed(
+                session,
+                order=order,
+                trade_state=(
+                    "CLOSED"
+                    if exc.code in _ALREADY_CLOSED_CODES
+                    else "ORDER_NOT_EXIST"
+                ),
+                payload={"query": payload, "close_error": exc.payload},
+                operation_type=operation_type,
+                operator_user_id=operator_user_id,
             )
+
+        logger.error(
+            "微信支付关单失败: out_trade_no=%s status=%s code=%s body=%s",
+            order.order_no,
+            exc.http_status,
+            exc.code,
+            _brief(exc.payload),
+        )
+        try:
+            latest_payload = await _query_wechat_order(order.order_no)
+        except WeChatPayApiError as query_exc:
+            _write_operation_log(
+                session,
+                order=order,
+                operation_type=operation_type,
+                trade_state=None,
+                payload={
+                    "query": payload,
+                    "close_error": exc.payload,
+                    "requery_error": query_exc.payload,
+                },
+                error_message=(
+                    f"关单失败 {exc.code}；再次查单失败 {query_exc.code}"
+                ),
+                operator_user_id=operator_user_id,
+            )
+            await session.commit()
             raise BusinessException(
                 "微信支付关单失败，请稍后重试",
                 code="PAYMENT_CLOSE_FAILED",
                 status_code=502,
             ) from exc
+        return await _cancel_after_close_error(
+            session,
+            order=order,
+            operation_type=operation_type,
+            operator_user_id=operator_user_id,
+            query_payload=latest_payload,
+            close_error=exc,
+            original_payload=payload,
+        )
 
-    if not mark_closed:
+    return await _mark_order_closed(
+        session,
+        order=order,
+        trade_state=trade_state,
+        payload={"query": payload, "close": "success"},
+        operation_type=operation_type,
+        operator_user_id=operator_user_id,
+    )
+
+
+async def _cancel_after_close_error(
+    session: AsyncSession,
+    *,
+    order: Order,
+    operation_type: OrderOperationType,
+    operator_user_id: int | None,
+    query_payload: dict[str, object],
+    close_error: WeChatPayApiError,
+    original_payload: dict[str, object] | None = None,
+) -> Order:
+    """关单异常后再次查单，并以最新微信状态为准。"""
+
+    latest_state = query_payload.get("trade_state")
+    if latest_state == "SUCCESS":
+        return await _process_paid_during_close(
+            session,
+            order=order,
+            payload=query_payload,
+            operation_type=operation_type,
+            operator_user_id=operator_user_id,
+        )
+    if latest_state in _CLOSED_TRADE_STATES:
+        return await _mark_order_closed(
+            session,
+            order=order,
+            trade_state=str(latest_state),
+            payload={
+                "query": query_payload,
+                "close_error": close_error.payload,
+            },
+            operation_type=operation_type,
+            operator_user_id=operator_user_id,
+        )
+
+    _write_operation_log(
+        session,
+        order=order,
+        operation_type=operation_type,
+        trade_state=(
+            latest_state if isinstance(latest_state, str) else None
+        ),
+        payload={
+            "query": original_payload or query_payload,
+            "requery": query_payload,
+            "close_error": close_error.payload,
+        },
+        error_message=f"微信关单异常 {close_error.code}",
+        operator_user_id=operator_user_id,
+    )
+    await session.commit()
+    raise BusinessException(
+        "微信支付关单失败，请稍后重试",
+        code="PAYMENT_CLOSE_FAILED",
+        status_code=502,
+    ) from close_error
+
+
+async def cancel_pending_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    order_no: str,
+    redis: Redis | None = None,
+) -> Order:
+    """用户主动取消待支付订单。
+
+    取消不限制下单时长；已支付 / 已关闭订单返回 409。若取消瞬间微信侧
+    已支付，则放弃取消并执行正常发课，返回 paid 状态。
+    """
+
+    order = await _get_order_by_no(session, order_no=order_no, user_id=user_id)
+    if order.source is not OrderSource.WECHAT_PAY:
+        raise BusinessException(
+            "订单当前状态不可操作",
+            code="ORDER_NOT_PAYABLE",
+            status_code=409,
+        )
+    if order.status is not OrderStatus.PENDING:
+        raise BusinessException(
+            "仅待支付订单可以取消",
+            code="ORDER_NOT_PENDING",
+            status_code=409,
+        )
+
+    if redis is None:
+        return await _cancel_pending_order_locked(
+            session,
+            order=order,
+            operation_type=OrderOperationType.MANUAL_CANCEL,
+            operator_user_id=user_id,
+            require_timeout=False,
+            strict=True,
+        )
+
+    async with order_lock(redis, order.order_no):
+        locked = await _get_order_by_no(
+            session,
+            order_no=order.order_no,
+            user_id=user_id,
+        )
+        return await _cancel_pending_order_locked(
+            session,
+            order=locked,
+            operation_type=OrderOperationType.MANUAL_CANCEL,
+            operator_user_id=user_id,
+            require_timeout=False,
+            strict=True,
+        )
+
+
+async def close_expired_order(
+    session: AsyncSession,
+    *,
+    order_no: str,
+    redis: Redis | None = None,
+    user_id: int | None = None,
+) -> Order:
+    """关闭已超过配置时长的待支付订单。
+
+    供定时任务与兼容的 close-order 接口使用；幂等：非 pending 直接返回。
+    """
+
+    order = await _get_order_by_no(
+        session,
+        order_no=order_no,
+        user_id=user_id,
+    )
+    # 虚拟支付订单不使用 v3 关单。
+    if order.source is not OrderSource.WECHAT_PAY:
         return order
 
-    locked = await _get_order_by_no(
-        session,
-        order_no=order.order_no,
-        user_id=user_id,
-        for_update=True,
-    )
-    if locked.status is OrderStatus.PENDING:
-        locked.status = OrderStatus.CLOSED
-        await session.commit()
-        logger.info(
-            "订单已关闭: out_trade_no=%s user_id=%s",
-            locked.order_no,
-            user_id,
+    async def _run(target: Order) -> Order:
+        return await _cancel_pending_order_locked(
+            session,
+            order=target,
+            operation_type=OrderOperationType.TIMEOUT_CLOSE,
+            operator_user_id=None,
+            require_timeout=True,
+            strict=False,
         )
-    return locked
+
+    if redis is None:
+        return await _run(order)
+
+    async with order_lock(redis, order.order_no):
+        locked = await _get_order_by_no(
+            session,
+            order_no=order.order_no,
+            user_id=user_id,
+        )
+        return await _run(locked)
+
+
+async def close_unpaid_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    order_no: str,
+    redis: Redis | None = None,
+) -> Order:
+    """兼容接口：关闭超过 30 分钟仍未支付的订单。"""
+
+    return await close_expired_order(
+        session,
+        order_no=order_no,
+        redis=redis,
+        user_id=user_id,
+    )
+
+
+async def reconcile_order(
+    session: AsyncSession,
+    *,
+    order_no: str,
+    redis: Redis | None = None,
+) -> Order:
+    """每日对账：查询微信真实状态，修正本地订单。
+
+    - 微信已支付而本地 pending / closed：补走发课，订单置 paid；
+    - 微信已关闭而本地 pending：本地置 closed 并写对账日志；
+    - 微信未支付而本地 paid：只记录不一致，不回收已发权益。
+    """
+
+    order = await _get_order_by_no(session, order_no=order_no)
+    # 虚拟支付订单走 xpay 推送对账，不经 v3 查单。
+    if order.source is not OrderSource.WECHAT_PAY:
+        return order
+    if order.status is OrderStatus.REFUNDED:
+        return order
+
+    async def _run(target: Order) -> Order:
+        try:
+            payload = await _query_wechat_order(target.order_no)
+        except WeChatPayApiError as exc:
+            if exc.code in _ORDER_NOT_FOUND_CODES:
+                if target.status is OrderStatus.PENDING:
+                    return await _mark_order_closed(
+                        session,
+                        order=target,
+                        trade_state="ORDER_NOT_EXIST",
+                        payload=exc.payload,
+                        operation_type=OrderOperationType.RECONCILE_CLOSE,
+                        operator_user_id=None,
+                    )
+                _write_operation_log(
+                    session,
+                    order=target,
+                    operation_type=OrderOperationType.RECONCILE,
+                    trade_state="ORDER_NOT_EXIST",
+                    payload=exc.payload,
+                    error_message="微信侧订单不存在",
+                    operator_user_id=None,
+                )
+                await session.commit()
+                return target
+            logger.error(
+                "对账查单失败: out_trade_no=%s status=%s code=%s body=%s",
+                target.order_no,
+                exc.http_status,
+                exc.code,
+                _brief(exc.payload),
+            )
+            _write_operation_log(
+                session,
+                order=target,
+                operation_type=OrderOperationType.RECONCILE,
+                trade_state=None,
+                payload=exc.payload,
+                error_message=f"对账查单失败 {exc.code}",
+                operator_user_id=None,
+            )
+            await session.commit()
+            return target
+
+        trade_state = payload.get("trade_state")
+        if trade_state == "SUCCESS":
+            was_paid = target.status is OrderStatus.PAID
+            transaction = _validate_success_payload(target, payload)
+            await _process_successful_transaction(
+                session,
+                transaction,
+                origin="reconcile",
+            )
+            fresh = await _get_order_by_no(
+                session,
+                order_no=target.order_no,
+            )
+            if not was_paid:
+                _write_operation_log(
+                    session,
+                    order=fresh,
+                    operation_type=OrderOperationType.RECONCILE,
+                    trade_state="SUCCESS",
+                    payload=payload,
+                    operator_user_id=None,
+                )
+                await session.commit()
+            return fresh
+
+        if (
+            isinstance(trade_state, str)
+            and trade_state in _CLOSED_TRADE_STATES
+            and target.status is OrderStatus.PENDING
+        ):
+            return await _mark_order_closed(
+                session,
+                order=target,
+                trade_state=trade_state,
+                payload=payload,
+                operation_type=OrderOperationType.RECONCILE_CLOSE,
+                operator_user_id=None,
+            )
+
+        if target.status is OrderStatus.PAID:
+            _write_operation_log(
+                session,
+                order=target,
+                operation_type=OrderOperationType.RECONCILE,
+                trade_state=(
+                    trade_state if isinstance(trade_state, str) else None
+                ),
+                payload=payload,
+                error_message="本地已支付但微信侧非成功状态，未回收权益",
+                operator_user_id=None,
+            )
+            await session.commit()
+            logger.error(
+                "对账发现状态不一致: out_trade_no=%s local=paid wechat=%s",
+                target.order_no,
+                trade_state,
+            )
+        return target
+
+    if redis is None:
+        return await _run(order)
+
+    async with order_lock(redis, order.order_no):
+        locked = await _get_order_by_no(
+            session,
+            order_no=order.order_no,
+        )
+        return await _run(locked)
 
 
 __all__ = [
+    "cancel_pending_order",
+    "close_expired_order",
     "close_unpaid_order",
     "create_payment_params",
+    "db_now_naive",
     "handle_payment_callback",
+    "order_now_naive",
     "query_and_sync_order",
+    "reconcile_order",
 ]

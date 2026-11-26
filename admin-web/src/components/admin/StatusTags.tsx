@@ -2,6 +2,8 @@ import { Tag } from 'antd'
 
 import type {
   AdminUserCourseItem,
+  AppointmentStatus,
+  CourseStatus,
   OrderStatus,
   VodMediaStatus
 } from '../../types'
@@ -75,6 +77,56 @@ export function UserCourseStatusTag({
   return (
     <Tag color="success" bordered={false} style={tagStyle}>
       有效
+    </Tag>
+  )
+}
+
+/** 课程上下架状态：已上架绿色、已下架灰色、草稿橙色。 */
+export function CourseStatusTag({ status }: { status: CourseStatus }) {
+  if (status === 'published') {
+    return (
+      <Tag color="success" bordered={false} style={tagStyle}>
+        已上架
+      </Tag>
+    )
+  }
+  if (status === 'draft') {
+    return (
+      <Tag color="orange" bordered={false} style={tagStyle}>
+        草稿
+      </Tag>
+    )
+  }
+  return (
+    <Tag bordered={false} style={tagStyle}>
+      已下架
+    </Tag>
+  )
+}
+
+/** 预约状态：待完成琥珀色、已完成绿色、已过期红色。 */
+export function AppointmentStatusTag({
+  status
+}: {
+  status: AppointmentStatus
+}) {
+  if (status === 'completed') {
+    return (
+      <Tag color="success" bordered={false} style={tagStyle}>
+        已完成
+      </Tag>
+    )
+  }
+  if (status === 'expired') {
+    return (
+      <Tag color="error" bordered={false} style={tagStyle}>
+        已过期
+      </Tag>
+    )
+  }
+  return (
+    <Tag color="warning" bordered={false} style={tagStyle}>
+      待完成
     </Tag>
   )
 }

@@ -28,6 +28,8 @@ class GiftLog(CreatedAtMixin, Base):
     __table_args__ = (
         Index("ix_gift_logs_mobile_course_id", "mobile", "course_id"),
         Index("ix_gift_logs_admin_id", "admin_id"),
+        Index("ix_gift_logs_user_id", "user_id"),
+        Index("ix_gift_logs_pregift_id", "pregift_id"),
         Index("ix_gift_logs_course_id", "course_id"),
         Index("ix_gift_logs_created_at", "created_at"),
         MYSQL_TABLE_OPTIONS,
@@ -48,6 +50,22 @@ class GiftLog(CreatedAtMixin, Base):
         String(20),
         nullable=False,
         comment="被赠课手机号，匹配用户的唯一依据",
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+        comment="实际到账主账号；历史日志与预赠待认领时为空",
+    )
+    pregift_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "course_pregifts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+        comment="由手机号预赠认领生成时记录来源预赠 ID",
     )
     course_id: Mapped[int] = mapped_column(
         BigInteger,

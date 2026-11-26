@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Image, Text, View } from '@tarojs/components'
-import Taro, { useRouter } from '@tarojs/taro'
+import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 
-import LoginModal from '../../components/LoginModal'
 import MockModeBadge from '../../components/MockModeBadge'
 import PurchaseModal from '../../components/PurchaseModal'
-import { useAuthGuard } from '../../hooks/useAuthGuard'
+import WxAuthSheet from '../../components/WxAuthSheet'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
 import {
-  createOrder,
-  isPaymentCancelled,
-  requestWeChatPayment
+  createVirtualOrder,
+  describeVirtualPayError,
+  isVirtualPayConfigurationError,
+  isVirtualPaySupported,
+  requestWeChatVirtualPayment
 } from '../../services/orderApi'
 import { getErrorMessage } from '../../services/request'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
@@ -27,8 +29,8 @@ import {
 } from '../../store/slices/courseSlice'
 import type { LessonBrief } from '../../types'
 import { formatPrice, parsePositiveInt } from '../../utils/format'
-import { openLoginModal } from '../../utils/loginModal'
-import { goPlayer, ROUTES } from '../../utils/navigation'
+import { goAppointment, goPlayer, ROUTES } from '../../utils/navigation'
+import { getVirtualPayPlatform } from '../../utils/platform'
 
 import './index.scss'
 
@@ -36,7 +38,7 @@ export default function CourseDetailPage() {
   const router = useRouter()
   const dispatch = useAppDispatch()
   const config = useSystemConfig()
-  const { checking, allowed } = useAuthGuard()
+  const { requireAuth } = useRequireAuth()
   const courseId = parsePositiveInt(router.params.id)
   const detailEntry = useAppSelector((state) =>
     courseId ? selectCourseDetailEntry(state, courseId) : undefined
@@ -47,6 +49,7 @@ export default function CourseDetailPage() {
   const isMockLogin = useAppSelector((state) => state.user.isMockLogin)
   const [purchaseVisible, setPurchaseVisible] = useState(false)
   const mountedRef = useRef(true)
+  const shownOnceRef = useRef(false)
   /** 播放页过期弹窗跳转而来时，仅自动打开一次购买弹窗。 */
   const autoRepurchaseRef = useRef(false)
   const repurchaseRequested = router.params.repurchase === '1'
@@ -59,16 +62,29 @@ export default function CourseDetailPage() {
   }, [])
 
   useEffect(() => {
-    if (allowed && token && courseId) {
+    // 课程详情公开只读；登录/登出后重新拉取以刷新 is_owned。
+    if (courseId) {
       void dispatch(fetchCourseDetail(courseId))
     }
-  }, [allowed, courseId, dispatch, token])
+  }, [courseId, dispatch, token])
 
   useEffect(() => {
     if (!token) {
       setPurchaseVisible(false)
     }
   }, [token])
+
+  useDidShow(() => {
+    // 返回本页时刷新归属状态：后台收回课程后不再显示已解锁。
+    if (!shownOnceRef.current) {
+      shownOnceRef.current = true
+      return
+    }
+    if (!courseId || !token) {
+      return
+    }
+    void dispatch(fetchCourseDetail(courseId))
+  })
 
   useEffect(() => {
     if (detail?.title) {
@@ -82,26 +98,57 @@ export default function CourseDetailPage() {
     }
   }
 
-  const openPurchase = () => {
-    if (!token) {
-      openLoginModal('登录后即可购买课程')
+  /** 打开购买面板前重新拉详情：预赠课程可能刚随登录自动领取，避免重复购买。 */
+  const preparePurchase = async () => {
+    if (!courseId) {
       return
     }
-    dispatch(clearOrder())
-    setPurchaseVisible(true)
+    try {
+      const fresh = await dispatch(fetchCourseDetail(courseId)).unwrap()
+      if (fresh.is_owned) {
+        void Taro.showToast({ title: '课程已解锁', icon: 'none' })
+        return
+      }
+      // 虚拟商品只能通过「小程序虚拟支付」售卖：没有可用道具映射的
+      // 付费课程一律不开放购买，绝不回退普通微信支付。
+      if (fresh.price > 0 && !fresh.vpay_product_id) {
+        void Taro.showToast({
+          title: '该课程暂未开放购买，请稍后再试',
+          icon: 'none'
+        })
+        return
+      }
+      dispatch(clearOrder())
+      setPurchaseVisible(true)
+    } catch (error) {
+      void Taro.showToast({ title: getErrorMessage(error), icon: 'none' })
+    }
   }
+
+  const openPurchase = () => {
+    requireAuth(() => preparePurchase(), '登录后即可购买课程')
+  }
+
+  /** 归属刷新为已解锁时，关闭未支付的购买面板。 */
+  useEffect(() => {
+    if (detail?.is_owned && purchaseVisible && !order.paying) {
+      setPurchaseVisible(false)
+      dispatch(clearOrder())
+    }
+  }, [detail?.is_owned, dispatch, order.paying, purchaseVisible])
 
   useEffect(() => {
     if (!repurchaseRequested || autoRepurchaseRef.current) {
       return
     }
-    if (!allowed || !token || !detail) {
+    if (!token || !detail) {
       return
     }
     autoRepurchaseRef.current = true
-    dispatch(clearOrder())
-    setPurchaseVisible(true)
-  }, [allowed, detail, dispatch, repurchaseRequested, token])
+    void preparePurchase()
+    // preparePurchase 依赖当前课程与 dispatch，只需在触发条件就绪时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, dispatch, repurchaseRequested, token])
 
   const closePurchase = () => {
     if (order.paying) {
@@ -117,40 +164,68 @@ export default function CourseDetailPage() {
     }
     if (!token) {
       setPurchaseVisible(false)
-      openLoginModal('登录后即可购买课程')
+      dispatch(clearOrder())
+      requireAuth(() => preparePurchase(), '登录后即可购买课程')
+      return
+    }
+
+    const vpayProductId = detail.vpay_product_id
+    if (!vpayProductId) {
+      void Taro.showToast({
+        title: '该课程暂未开放购买，请稍后再试',
+        icon: 'none'
+      })
       return
     }
 
     dispatch(startPayment())
     try {
-      const createdOrder = await createOrder(detail.id)
-      dispatch(orderCreated(createdOrder))
-      await requestWeChatPayment(createdOrder.payment)
+      // 虚拟商品只能走官方「小程序虚拟支付」；每次购买重新取
+      // wx.login code，服务端用完即弃，避免 session_key 过期。
+      if (!isVirtualPaySupported()) {
+        throw new Error('当前微信版本不支持虚拟支付，请升级微信后重试')
+      }
+      const loginResult = await Taro.login()
+      if (!loginResult.code) {
+        throw new Error('微信登录失败，请重试')
+      }
+      const createdVpayOrder = await createVirtualOrder(
+        vpayProductId,
+        getVirtualPayPlatform(),
+        loginResult.code
+      )
+      if (createdVpayOrder.course_id !== detail.id) {
+        throw new Error('商品信息有误，请返回重试')
+      }
+      dispatch(orderCreated(createdVpayOrder))
+      await requestWeChatVirtualPayment(createdVpayOrder)
 
       if (!mountedRef.current) {
         return
       }
-      // 支付面板关闭即视为用户已完成付款；订单最终状态由支付成功页
-      // 轮询 query-order 确认（后端会主动向微信查单作为回调兜底）。
+      // 支付面板成功只代表用户完成付款；课程权限以服务端 xpay 推送
+      // 发货为准，支付成功页轮询订单状态确认。
       dispatch(paymentSucceeded())
       setPurchaseVisible(false)
       dispatch(clearOrder())
       void Taro.navigateTo({
         url: `${ROUTES.paymentSuccess}?orderNo=${encodeURIComponent(
-          createdOrder.order_no
+          createdVpayOrder.out_trade_no
         )}&courseId=${detail.id}&title=${encodeURIComponent(detail.title)}`
       })
     } catch (error) {
       if (!mountedRef.current) {
         return
       }
-      dispatch(
-        paymentFailed(
-          isPaymentCancelled(error)
-            ? '支付已取消，可稍后重新发起'
-            : getErrorMessage(error)
-        )
-      )
+      const message = describeVirtualPayError(error)
+      dispatch(paymentFailed(message))
+      if (isVirtualPayConfigurationError(error)) {
+        void Taro.showModal({
+          title: '暂时无法支付',
+          content: message,
+          showCancel: false
+        })
+      }
     }
   }
 
@@ -162,35 +237,28 @@ export default function CourseDetailPage() {
       })
       return
     }
-    goPlayer(lesson.id, detail.id, lesson.title)
+    // 仅在用户主动点课时时检查登录，进入详情页本身不弹授权。
+    requireAuth(
+      () => goPlayer(lesson.id, detail.id, lesson.title),
+      '登录后即可开始学习'
+    )
   }
 
   const startLearning = () => {
     const firstLesson = detail?.lessons[0]
     if (detail?.is_owned && firstLesson) {
-      goPlayer(firstLesson.id, detail.id, firstLesson.title)
+      requireAuth(
+        () => goPlayer(firstLesson.id, detail.id, firstLesson.title),
+        '登录后即可开始学习'
+      )
     }
   }
 
+  const openAppointment = () => {
+    requireAuth(goAppointment, '登录后即可预约专项指导')
+  }
+
   const renderBody = () => {
-    if (checking) {
-      return <View className='loading-line'>正在确认登录状态…</View>
-    }
-    if (!allowed) {
-      return (
-        <View className='section'>
-          <View className='state-block'>
-            <Text>登录后即可查看课程详情</Text>
-            <Text
-              className='state-block__action'
-              onClick={() => openLoginModal('登录后即可查看课程')}
-            >
-              去登录
-            </Text>
-          </View>
-        </View>
-      )
-    }
     if (!courseId) {
       return (
         <View className='section'>
@@ -268,6 +336,25 @@ export default function CourseDetailPage() {
             <Text className='course-detail__meta-label'>学习权限</Text>
           </View>
         </View>
+
+        {detail.is_owned && detail.appointment_quota > 0 ? (
+          <View className='section'>
+            <View
+              className='course-detail__quota'
+              onClick={openAppointment}
+            >
+              <View className='course-detail__quota-main'>
+                <Text className='course-detail__quota-label'>
+                  含专项指导预约
+                </Text>
+                <Text className='course-detail__quota-value'>
+                  {detail.appointment_quota} 次
+                </Text>
+              </View>
+              <Text className='course-detail__quota-action'>去预约 ›</Text>
+            </View>
+          </View>
+        ) : null}
 
         <View className='section course-detail__section'>
           <Text className='section-title'>课程介绍</Text>
@@ -371,7 +458,7 @@ export default function CourseDetailPage() {
         }}
       />
 
-      <LoginModal />
+      <WxAuthSheet />
     </View>
   )
 }

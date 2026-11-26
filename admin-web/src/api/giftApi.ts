@@ -1,4 +1,6 @@
 import type {
+  AdminPregift,
+  AdminPregiftFilters,
   GiftGrantPayload,
   GiftGrantResult,
   GiftLog,
@@ -8,6 +10,11 @@ import type {
 import { apiGet, apiPost, compactParams } from './request'
 
 export interface GiftLogQueryParams extends GiftLogFilters {
+  page: number
+  page_size: number
+}
+
+export interface PregiftQueryParams extends AdminPregiftFilters {
   page: number
   page_size: number
 }
@@ -23,6 +30,21 @@ export function grantGiftApi(
     mobile: payload.mobile.trim(),
     course_id: payload.course_id,
     validity: payload.validity
+  })
+}
+
+export function listPregiftsApi(
+  params: PregiftQueryParams
+): Promise<PageResponse<AdminPregift>> {
+  return apiGet<PageResponse<AdminPregift>>('/admin/gifts/pregifts', {
+    params: compactParams({
+      page: params.page,
+      page_size: params.page_size,
+      mobile: params.mobile?.trim(),
+      course_id: params.course_id,
+      admin_id: params.admin_id,
+      status: params.status
+    })
   })
 }
 

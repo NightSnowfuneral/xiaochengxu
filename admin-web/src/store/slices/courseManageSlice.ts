@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
 import {
+  changeAdminCourseStatus,
   createAdminCourse,
   deleteAdminCourse,
   listAdminCourses,
@@ -10,6 +11,7 @@ import { getErrorMessage } from '../../api/request'
 import type {
   Course,
   CourseCreatePayload,
+  CourseStatus,
   CourseUpdatePayload,
   MessageResponse,
   PageResponse
@@ -20,6 +22,7 @@ export interface FetchCoursesArgs {
   pageSize?: number
   keyword?: string
   hotOnly?: boolean
+  status?: CourseStatus
 }
 
 export interface CourseManageState {
@@ -29,10 +32,12 @@ export interface CourseManageState {
   pageSize: number
   keyword: string
   hotOnly: boolean
+  statusFilter: CourseStatus | 'all'
   loading: boolean
   error: string | null
   saving: boolean
   deletingId: number | null
+  statusChangingId: number | null
 }
 
 const initialState: CourseManageState = {
@@ -42,10 +47,12 @@ const initialState: CourseManageState = {
   pageSize: 20,
   keyword: '',
   hotOnly: false,
+  statusFilter: 'all',
   loading: false,
   error: null,
   saving: false,
-  deletingId: null
+  deletingId: null,
+  statusChangingId: null
 }
 
 export const fetchCourses = createAsyncThunk<
@@ -58,7 +65,8 @@ export const fetchCourses = createAsyncThunk<
       page: args.page,
       page_size: args.pageSize,
       keyword: args.keyword?.trim() || undefined,
-      is_hot_topic: args.hotOnly ? true : undefined
+      is_hot_topic: args.hotOnly ? true : undefined,
+      status: args.status
     })
   } catch (error) {
     return rejectWithValue(getErrorMessage(error))
@@ -101,6 +109,18 @@ export const deleteCourse = createAsyncThunk<
   }
 })
 
+export const changeCourseStatus = createAsyncThunk<
+  Course,
+  { id: number; status: CourseStatus },
+  { rejectValue: string }
+>('courseManage/changeStatus', async ({ id, status }, { rejectWithValue }) => {
+  try {
+    return await changeAdminCourseStatus(id, status)
+  } catch (error) {
+    return rejectWithValue(getErrorMessage(error))
+  }
+})
+
 const courseManageSlice = createSlice({
   name: 'courseManage',
   initialState,
@@ -119,6 +139,7 @@ const courseManageSlice = createSlice({
         state.pageSize = action.payload.page_size
         state.keyword = action.meta.arg.keyword?.trim() ?? ''
         state.hotOnly = Boolean(action.meta.arg.hotOnly)
+        state.statusFilter = action.meta.arg.status ?? 'all'
       })
       .addCase(fetchCourses.rejected, (state, action) => {
         state.loading = false
@@ -151,6 +172,18 @@ const courseManageSlice = createSlice({
       })
       .addCase(deleteCourse.rejected, (state) => {
         state.deletingId = null
+      })
+      .addCase(changeCourseStatus.pending, (state, action) => {
+        state.statusChangingId = action.meta.arg.id
+      })
+      .addCase(changeCourseStatus.fulfilled, (state, action) => {
+        state.statusChangingId = null
+        state.items = state.items.map((course) =>
+          course.id === action.payload.id ? action.payload : course
+        )
+      })
+      .addCase(changeCourseStatus.rejected, (state) => {
+        state.statusChangingId = null
       })
   }
 })

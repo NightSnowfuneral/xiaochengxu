@@ -4,6 +4,9 @@ import type {
   AdminRevokeCoursePayload,
   AdminRevokeCourseResult,
   AdminUserCourseItem,
+  AdminUserCourseLog,
+  AdminUserCourseLogQueryParams,
+  AdminUserListItem,
   AdminUserSummary,
   PageResponse
 } from '../types'
@@ -13,6 +16,21 @@ import { apiGet, apiPost, compactParams } from './request'
 export function lookupAdminUser(keyword: string): Promise<AdminUserSummary> {
   return apiGet<AdminUserSummary>('/admin/users/lookup', {
     params: compactParams({ keyword: keyword.trim() })
+  })
+}
+
+/** 手机号片段 / 昵称片段 / 用户 ID 模糊搜索用户，返回已拥有课程数。 */
+export function searchAdminUsers(
+  keyword: string,
+  page: number,
+  pageSize: number
+): Promise<PageResponse<AdminUserListItem>> {
+  return apiGet<PageResponse<AdminUserListItem>>('/admin/users/search', {
+    params: compactParams({
+      keyword: keyword.trim(),
+      page,
+      page_size: pageSize
+    })
   })
 }
 
@@ -52,4 +70,23 @@ export function revokeAdminUserCourse(
     user_id: payload.user_id,
     course_id: payload.course_id
   })
+}
+
+/** 分页查询用户课程操作日志（赠课 / 重置有效期 / 收回）。 */
+export function fetchAdminUserCourseLogs(
+  params: AdminUserCourseLogQueryParams
+): Promise<PageResponse<AdminUserCourseLog>> {
+  return apiGet<PageResponse<AdminUserCourseLog>>(
+    '/admin/user-courses/logs',
+    {
+      params: compactParams({
+        page: params.page,
+        page_size: params.page_size,
+        user_id: params.user_id,
+        course_id: params.course_id,
+        admin_id: params.admin_id,
+        action: params.action
+      })
+    }
+  )
 }

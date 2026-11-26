@@ -90,6 +90,22 @@ class AdminUserSummary(ResponseSchema):
     avatar_url: str | None = None
 
 
+class AdminUserSearchQuery(PageQuery):
+    """用户模糊搜索：手机号片段、昵称片段或用户 ID。"""
+
+    keyword: str = Field(
+        min_length=1,
+        max_length=64,
+        description="手机号片段、昵称片段，或完整用户 ID",
+    )
+
+
+class AdminUserListItem(AdminUserSummary):
+    """模糊搜索结果中的用户及其已拥有课程数。"""
+
+    owned_course_count: int = Field(ge=0, description="已拥有课程数")
+
+
 class AdminUserCourseItem(ResponseSchema):
     """用户已拥有课程列表项。
 
@@ -157,16 +173,46 @@ class AdminRevokeCourseResponse(ResponseSchema):
     message: str = "课程权限已收回"
 
 
+class AdminUserCourseLogQuery(PageQuery):
+    """用户课程操作日志筛选条件。"""
+
+    user_id: int | None = Field(default=None, gt=0)
+    course_id: int | None = Field(default=None, gt=0)
+    admin_id: int | None = Field(default=None, gt=0)
+    action: UserCourseAction | None = None
+
+
+class AdminUserCourseLogItem(ResponseSchema):
+    """用户课程操作日志项（赠课 / 重置 / 收回）。"""
+
+    id: int
+    admin_id: int
+    admin_username: str | None = None
+    user_id: int
+    user_nickname: str | None = None
+    user_mobile: str | None = None
+    course_id: int
+    course_title: str | None = None
+    action: UserCourseAction
+    valid_days: int | None = None
+    expire_time: datetime | None = None
+    created_at: datetime
+
+
 __all__ = [
     "AdminGrantCourseRequest",
     "AdminGrantCourseResponse",
     "AdminRevokeCourseRequest",
     "AdminRevokeCourseResponse",
     "AdminUserCourseItem",
+    "AdminUserCourseLogItem",
+    "AdminUserCourseLogQuery",
     "AdminUserCourseQuery",
     "AdminUserCourseResponse",
     "AdminUserCourseSource",
+    "AdminUserListItem",
     "AdminUserLookupQuery",
+    "AdminUserSearchQuery",
     "AdminUserSummary",
     "GiftValidity",
     "UserCourseValidityStatus",

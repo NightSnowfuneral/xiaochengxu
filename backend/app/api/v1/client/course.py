@@ -1,7 +1,7 @@
 """C 端课程、播放鉴权与学习进度路由。
 
-- 课程列表 / 详情 / 我的课程均要求 C 端用户 JWT；详情中的 is_owned
-  由服务层基于 user_course 实时计算；
+- 课程列表 / 详情公开只读：匿名可浏览，携带 Token 时校验身份并实时计算
+  is_owned；我的课程始终要求 C 端用户 JWT；
 - 播放鉴权必须通过课程归属校验，未购买 / 未获赠返回 403；
 - 进度上报只从 JWT 取 user_id，写 Redis 缓冲，成功返回 204。
 """
@@ -22,7 +22,7 @@ from ....schemas import (
     StudyProgressReportRequest,
 )
 from ....services import course_service, lesson_service, study_record_service
-from ...deps import DbSession, RedisDep, UserDep
+from ...deps import DbSession, OptionalUserDep, RedisDep, UserDep
 
 router = APIRouter(prefix="/client", tags=["client-course"])
 
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/client", tags=["client-course"])
 )
 async def list_courses(
     session: DbSession,
-    _user: UserDep,
+    _user: OptionalUserDep,
     query: Annotated[CourseListQuery, Depends()],
 ) -> PageResponse[CourseListItem]:
     return await course_service.list_courses_for_client(session, query)
@@ -66,12 +66,12 @@ async def list_my_courses(
 async def get_course_detail(
     course_id: Annotated[int, Path(gt=0)],
     session: DbSession,
-    user: UserDep,
+    user: OptionalUserDep,
 ) -> CourseDetailResponse:
     return await course_service.get_course_detail(
         session,
         course_id,
-        user_id=user.user_id,
+        user_id=user.user_id if user else None,
     )
 
 

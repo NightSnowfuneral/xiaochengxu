@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button,
   Input,
@@ -6,16 +6,17 @@ import {
   View
 } from '@tarojs/components'
 import Taro, {
+  useDidShow,
   usePullDownRefresh,
   useReachBottom,
   useRouter
 } from '@tarojs/taro'
 
 import CourseCard from '../../components/CourseCard'
-import LoginModal from '../../components/LoginModal'
 import MockModeBadge from '../../components/MockModeBadge'
+import WxAuthSheet from '../../components/WxAuthSheet'
 import { DEFAULT_PAGE_SIZE } from '../../constants'
-import { useAuthGuard } from '../../hooks/useAuthGuard'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { fetchConfigs } from '../../store/slices/configSlice'
@@ -25,7 +26,6 @@ import {
   resetCatalog
 } from '../../store/slices/courseSlice'
 import { safeDecode } from '../../utils/format'
-import { openLoginModal } from '../../utils/loginModal'
 import { goCourseDetail } from '../../utils/navigation'
 
 import './index.scss'
@@ -43,7 +43,7 @@ export default function CourseListPage() {
   const router = useRouter()
   const dispatch = useAppDispatch()
   const config = useSystemConfig()
-  const { checking, allowed } = useAuthGuard()
+  const { openLogin } = useRequireAuth()
   const mode = resolveMode(router.params.mode)
   const initialKeyword = safeDecode(router.params.keyword).trim()
   const [searchInput, setSearchInput] = useState(initialKeyword)
@@ -54,12 +54,13 @@ export default function CourseListPage() {
   const catalog = useAppSelector((state) => state.course.catalog)
   const mine = useAppSelector((state) => state.course.mine)
   const list = mode === 'mine' ? mine : catalog
+  const shownOnceRef = useRef(false)
 
   useEffect(() => {
-    if (!allowed || !token) {
-      return
-    }
     if (mode === 'mine') {
+      if (!token || isMockLogin) {
+        return
+      }
       void dispatch(fetchMyCourses({ page: 1, pageSize: DEFAULT_PAGE_SIZE }))
       return
     }
@@ -77,10 +78,22 @@ export default function CourseListPage() {
         isHotTopic: mode === 'hot' ? true : undefined
       })
     )
-  }, [activeKeyword, allowed, dispatch, mode, token])
+  }, [activeKeyword, dispatch, isMockLogin, mode, token])
+
+  useDidShow(() => {
+    // 返回「我的课程」时刷新，确保后台收回的课程不再展示。
+    if (!shownOnceRef.current) {
+      shownOnceRef.current = true
+      return
+    }
+    if (mode !== 'mine' || !token || isMockLogin) {
+      return
+    }
+    void dispatch(fetchMyCourses({ page: 1, pageSize: DEFAULT_PAGE_SIZE }))
+  })
 
   usePullDownRefresh(() => {
-    if (!allowed || !token) {
+    if (mode === 'mine' && (!token || isMockLogin)) {
       void Taro.stopPullDownRefresh()
       return
     }
@@ -120,8 +133,7 @@ export default function CourseListPage() {
 
   useReachBottom(() => {
     if (
-      !allowed ||
-      !token ||
+      (mode === 'mine' && (!token || isMockLogin)) ||
       !list.hasMore ||
       list.status === 'loading' ||
       list.page < 1
@@ -152,10 +164,6 @@ export default function CourseListPage() {
   const submitSearch = () => {
     const nextKeyword = searchInput.trim()
     if (nextKeyword === activeKeyword) {
-      if (!allowed) {
-        openLoginModal('登录后即可搜索课程')
-        return
-      }
       dispatch(
         resetCatalog({ keyword: nextKeyword, isHotTopic: mode === 'hot' })
       )
@@ -195,6 +203,26 @@ export default function CourseListPage() {
         : '全部课程'
 
   const renderList = () => {
+    if (mode === 'mine' && !token) {
+      return (
+        <View className='state-block'>
+          <Text>登录后查看你的课程与预约</Text>
+          <Text
+            className='state-block__action'
+            onClick={() => openLogin('登录后查看你的课程与预约')}
+          >
+            手机号快捷登录
+          </Text>
+        </View>
+      )
+    }
+    if (mode === 'mine' && isMockLogin) {
+      return (
+        <View className='state-block'>
+          测试模式不会请求真实课程列表；退出后使用手机号快捷登录即可查看已购课程。
+        </View>
+      )
+    }
     if (list.status === 'loading' && !list.items.length) {
       return <View className='loading-line'>正在加载课程…</View>
     }
@@ -273,25 +301,9 @@ export default function CourseListPage() {
         ) : null}
       </View>
 
-      <View className='section'>
-        {checking ? (
-          <View className='loading-line'>正在确认登录状态…</View>
-        ) : !allowed ? (
-          <View className='state-block'>
-            <Text>登录后即可查看课程</Text>
-            <Text
-              className='state-block__action'
-              onClick={() => openLoginModal('登录后即可查看课程')}
-            >
-              去登录
-            </Text>
-          </View>
-        ) : (
-          renderList()
-        )}
-      </View>
+      <View className='section'>{renderList()}</View>
 
-      <LoginModal />
+      <WxAuthSheet />
     </View>
   )
 }

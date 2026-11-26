@@ -10,9 +10,14 @@ alembic>=1.13,<2.0
 aiomysql>=0.2,<1.0
 PyMySQL>=1.1,<2.0
 cryptography>=42,<48
+defusedxml>=0.7,<1.0
 
 # Redis
 redis>=5.0,<7.0
+
+# 时区数据：Linux 容器使用系统 tzdata；Windows 本地开发/测试需要该包，
+# 否则 ZoneInfo("Asia/Shanghai") 会抛 ZoneInfoNotFoundError。
+tzdata>=2024.1
 
 # JWT / 密码
 python-jose[cryptography]>=3.4,<4.0

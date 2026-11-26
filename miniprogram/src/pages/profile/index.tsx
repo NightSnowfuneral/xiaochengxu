@@ -1,16 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Image, Input, Text, View } from '@tarojs/components'
-import Taro from '@tarojs/taro'
+import Taro, { useDidShow } from '@tarojs/taro'
 
 import CourseCard from '../../components/CourseCard'
-import LoginModal from '../../components/LoginModal'
 import MockModeBadge from '../../components/MockModeBadge'
+import WxAuthSheet from '../../components/WxAuthSheet'
+import orderWalletIcon from '../../assets/icons/order-wallet.png'
+import { useRequireAuth } from '../../hooks/useRequireAuth'
 import { useSystemConfig } from '../../hooks/useSystemConfig'
+import { getAppointmentOverview } from '../../services/appointmentApi'
 import { getErrorMessage } from '../../services/request'
+import type { AppointmentOverview } from '../../types'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { fetchMyCourses } from '../../store/slices/courseSlice'
 import {
-  bindPhoneWithCode,
   logout,
   refreshProfile,
   saveAvatar,
@@ -20,10 +23,11 @@ import {
   avatarLetter,
   maskMobile
 } from '../../utils/format'
-import { openLoginModal } from '../../utils/loginModal'
 import {
+  goAppointment,
   goCourseDetail,
-  goCourseList
+  goCourseList,
+  goOrders
 } from '../../utils/navigation'
 
 import './index.scss'
@@ -31,15 +35,44 @@ import './index.scss'
 export default function ProfilePage() {
   const dispatch = useAppDispatch()
   useSystemConfig()
+  const { openLogin } = useRequireAuth()
   const token = useAppSelector((state) => state.user.token)
   const profile = useAppSelector((state) => state.user.profile)
   const isMockLogin = useAppSelector((state) => state.user.isMockLogin)
   const mine = useAppSelector((state) => state.course.mine)
-  const [binding, setBinding] = useState(false)
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [editingNickname, setEditingNickname] = useState(false)
   const [nicknameDraft, setNicknameDraft] = useState('')
   const [savingNickname, setSavingNickname] = useState(false)
+  const [quotaOverview, setQuotaOverview] =
+    useState<AppointmentOverview | null>(null)
+  const [quotaLoading, setQuotaLoading] = useState(false)
+  const quotaSeq = useRef(0)
+  const quotaShownOnce = useRef(false)
+
+  const loadQuotaOverview = async () => {
+    if (!token || isMockLogin) {
+      quotaSeq.current += 1
+      setQuotaOverview(null)
+      setQuotaLoading(false)
+      return
+    }
+    const seq = quotaSeq.current + 1
+    quotaSeq.current = seq
+    setQuotaLoading(true)
+    try {
+      const overview = await getAppointmentOverview()
+      if (seq === quotaSeq.current) {
+        setQuotaOverview(overview)
+      }
+    } catch {
+      // 概览失败不阻塞个人中心其他内容，保留上一次成功的数据。
+    } finally {
+      if (seq === quotaSeq.current) {
+        setQuotaLoading(false)
+      }
+    }
+  }
 
   useEffect(() => {
     if (!token) {
@@ -51,28 +84,19 @@ export default function ProfilePage() {
     }
   }, [dispatch, isMockLogin, token])
 
-  const handleBindPhone = async (event: any) => {
-    const code = event?.detail?.code
-    if (!code) {
-      void Taro.showToast({
-        title: '请在真机微信中完成手机号授权',
-        icon: 'none'
-      })
+  useEffect(() => {
+    void loadQuotaOverview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, isMockLogin])
+
+  useDidShow(() => {
+    // 首次展示由 useEffect 负责，避免进入页面时重复请求两次概览。
+    if (!quotaShownOnce.current) {
+      quotaShownOnce.current = true
       return
     }
-    setBinding(true)
-    try {
-      await bindPhoneWithCode(code)
-      void Taro.showToast({ title: '手机号绑定成功', icon: 'success' })
-    } catch (error) {
-      void Taro.showToast({
-        title: getErrorMessage(error),
-        icon: 'none'
-      })
-    } finally {
-      setBinding(false)
-    }
-  }
+    void loadQuotaOverview()
+  })
 
   const handleChooseAvatar = async (event: any) => {
     const avatarUrl = event?.detail?.avatarUrl
@@ -134,15 +158,16 @@ export default function ProfilePage() {
     if (!result.confirm) {
       return
     }
-    logout()
+    // logout 内部会调用后端作废 Token、清理本地缓存并切回首页。
     void Taro.showToast({ title: '已退出登录', icon: 'none' })
+    await logout()
   }
 
   const renderCourses = () => {
     if (isMockLogin) {
       return (
         <View className='profile-inline-note'>
-          测试模式不会请求真实课程列表；退出后使用微信登录即可查看已购课程。
+          测试模式不会请求真实课程列表；退出后使用手机号快捷登录即可查看已购课程。
         </View>
       )
     }
@@ -267,11 +292,19 @@ export default function ProfilePage() {
               </View>
             ) : (
               <Text className='profile-card__name'>
-                {profile ? profile.nickname || '微信用户' : '尚未登录'}
+                {profile
+                  ? profile.nickname || '微信用户'
+                  : token
+                    ? '正在同步资料…'
+                    : '未登录'}
               </Text>
             )}
             <Text className='profile-card__mobile'>
-              {profile ? maskMobile(profile.mobile) : '登录后同步学习课程'}
+              {profile
+                ? maskMobile(profile.mobile)
+                : token
+                  ? '正在同步资料…'
+                  : '登录查看课程、预约记录'}
             </Text>
             {profile && !editingNickname ? (
               <Text className='profile-card__edit' onClick={startEditNickname}>
@@ -289,34 +322,21 @@ export default function ProfilePage() {
           </Text>
         ) : null}
 
-        {!profile ? (
+        {!token ? (
           <Button
             className='profile-login-button'
-            onClick={() => openLoginModal('登录后查看个人中心')}
+            onClick={() => openLogin('登录后查看个人中心')}
           >
-            微信登录
+            手机号快捷登录
           </Button>
         ) : (
           <View className='profile-actions'>
-            {!profile.mobile ? (
-              <Button
-                className='profile-bind-button'
-                openType='getPhoneNumber'
-                loading={binding}
-                disabled={binding}
-                onGetPhoneNumber={handleBindPhone}
-              >
-                绑定本机手机号
-              </Button>
-            ) : (
-              <View className='profile-bound'>
-                <Text className='profile-bound__dot'>✓</Text>
-                <Text className='profile-bound__text'>手机号已绑定</Text>
-              </View>
-            )}
+            <View className='profile-bound'>
+              <Text className='profile-bound__dot'>✓</Text>
+              <Text className='profile-bound__text'>手机号已绑定</Text>
+            </View>
             <Button
               className='profile-logout-button'
-              disabled={binding}
               onClick={() => {
                 void handleLogout()
               }}
@@ -327,19 +347,57 @@ export default function ProfilePage() {
         )}
 
         <Text className='profile-hint'>
-          后台赠课仅按已绑定手机号匹配；绑定手机号后才能接收赠课。
+          后台赠课按绑定手机号匹配，同一手机号下的课程与预约次数自动同步。
         </Text>
-        {profile && !isMockLogin && !profile.mobile ? (
-          <Text className='profile-hint profile-hint--device'>
-            手机号授权需在真机微信中完成。
-          </Text>
-        ) : null}
       </View>
+
+      <View className='section profile-orders-entry'>
+        <View className='profile-entry' onClick={() => goOrders()}>
+          <Image
+            className='profile-entry__badge'
+            src={orderWalletIcon}
+            mode='aspectFit'
+          />
+          <View className='profile-entry__main'>
+            <Text className='profile-entry__title'>我的订单</Text>
+            <Text className='profile-entry__subtitle'>
+              课程订单、金额与支付状态
+            </Text>
+          </View>
+          <Text className='profile-entry__arrow'>›</Text>
+        </View>
+      </View>
+
+      {profile && !isMockLogin ? (
+        <View className='section'>
+          <View className='profile-appointment'>
+            <View className='profile-appointment__main'>
+              <Text className='profile-appointment__title'>专项指导</Text>
+              <View className='profile-appointment__body'>
+                <Text className='profile-appointment__value'>
+                  {quotaOverview
+                    ? quotaOverview.remaining_total
+                    : quotaLoading
+                      ? '…'
+                      : '--'}
+                </Text>
+                <Text className='profile-appointment__unit'>次可预约</Text>
+              </View>
+            </View>
+            <View
+              className='profile-appointment__button'
+              onClick={() => goAppointment()}
+            >
+              去预约
+            </View>
+          </View>
+        </View>
+      ) : null}
 
       <View className='section profile-courses'>
         <View className='section-head'>
           <Text className='section-title'>我的课程</Text>
-          {profile ? (
+          {token ? (
             <Text
               className='section-more'
               onClick={() => goCourseList({ mode: 'mine' })}
@@ -349,14 +407,14 @@ export default function ProfilePage() {
           ) : null}
         </View>
 
-        {!profile ? (
+        {!token ? (
           <View className='state-block'>
-            <Text>登录后查看已购买或获赠的课程</Text>
+            <Text>登录后查看你的课程与预约</Text>
             <Text
               className='state-block__action'
-              onClick={() => openLoginModal('登录后查看我的课程')}
+              onClick={() => openLogin('登录后查看你的课程与预约')}
             >
-              去登录
+              手机号快捷登录
             </Text>
           </View>
         ) : (
@@ -364,7 +422,7 @@ export default function ProfilePage() {
         )}
       </View>
 
-      <LoginModal />
+      <WxAuthSheet />
     </View>
   )
 }

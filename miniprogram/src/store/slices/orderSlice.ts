@@ -1,13 +1,14 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
 import type {
-  OrderCreateResponse,
+  OrderCreatedBase,
   OrderResponse,
   OrderStatus
 } from '../../types'
 
 export interface OrderState {
-  currentOrder: OrderCreateResponse | null
+  /** 只保存订单公共字段，不保存虚拟支付调起参数。 */
+  currentOrder: OrderCreatedBase | null
   status: OrderStatus | null
   paying: boolean
   paid: boolean
@@ -32,7 +33,7 @@ const orderSlice = createSlice({
       state.error = null
       state.status = null
     },
-    orderCreated(state, action: PayloadAction<OrderCreateResponse>) {
+    orderCreated(state, action: PayloadAction<OrderCreatedBase>) {
       state.currentOrder = action.payload
       state.status = action.payload.status
       state.error = null

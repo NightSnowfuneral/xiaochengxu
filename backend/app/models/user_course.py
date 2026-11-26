@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, CreatedAtMixin, MYSQL_TABLE_OPTIONS
@@ -68,6 +76,13 @@ class UserCourse(CreatedAtMixin, Base):
         DateTime,
         nullable=True,
         comment="授权过期时间（UTC）；与 valid_start_at 同为 NULL 表示永久有效",
+    )
+    appointment_quota_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        comment="本次购买 / 赠课附赠的专项指导预约次数快照",
     )
 
     user: Mapped["User"] = relationship(

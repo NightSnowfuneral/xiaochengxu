@@ -85,6 +85,15 @@
   padding: 44px 26px 0;
 }
 
+/* 获取播放授权 / 视频首帧加载：占住播放器同高区域，避免布局跳动。 */
+.player-auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 422px;
+  background: #000000;
+}
+
 /* 深色页面上的加载 / 鉴权状态。 */
 .player-page .loading-line {
   padding: 56px 0;

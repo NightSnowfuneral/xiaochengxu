@@ -7,6 +7,9 @@ export const ROUTES = {
   courseDetail: '/pages/course-detail/index',
   player: '/pages/player/index',
   profile: '/pages/profile/index',
+  appointment: '/pages/appointment/index',
+  orders: '/pages/orders/index',
+  orderDetail: '/pages/order-detail/index',
   paymentSuccess: '/pages/payment-success/index'
 } as const
 
@@ -41,6 +44,16 @@ export function goCourseDetail(courseId: number): void {
   })
 }
 
+/**
+ * 虚拟支付待支付订单无法复用签名参数，只能回到课程页重新下单；
+ * repurchase=1 会在详情页自动打开购买面板。
+ */
+export function goCourseDetailRepurchase(courseId: number): void {
+  void Taro.navigateTo({
+    url: `${ROUTES.courseDetail}?id=${courseId}&repurchase=1`
+  })
+}
+
 export function goPlayer(
   lessonId: number,
   courseId: number,
@@ -55,4 +68,18 @@ export function goPlayer(
 
 export function goProfile(): void {
   void Taro.navigateTo({ url: ROUTES.profile })
+}
+
+export function goAppointment(): void {
+  void Taro.navigateTo({ url: ROUTES.appointment })
+}
+
+export function goOrders(): void {
+  void Taro.navigateTo({ url: ROUTES.orders })
+}
+
+export function goOrderDetail(orderNo: string): void {
+  void Taro.navigateTo({
+    url: `${ROUTES.orderDetail}?orderNo=${encodeURIComponent(orderNo)}`
+  })
 }
